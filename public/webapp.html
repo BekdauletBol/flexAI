@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Plan Assistant</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --accent: #2DD4BF;
+    --accent-glow: rgba(45, 212, 191, 0.25);
+    --sky: #38BDF8;
+    --sky-glow: rgba(56, 189, 248, 0.2);
+    --high: #EF4444;
+    --medium: #F59E0B;
+    --low: #6B7280;
+    --done: #10B981;
+    --bg-primary: var(--tg-theme-bg-color, #0F172A);
+    --bg-secondary: var(--tg-theme-secondary-bg-color, #1E293B);
+    --text-primary: var(--tg-theme-text-color, #F1F5F9);
+    --text-secondary: var(--tg-theme-hint-color, #94A3B8);
+    --card-bg: rgba(30, 41, 59, 0.6);
+    --card-border: rgba(148, 163, 184, 0.1);
+    --glass-blur: 16px;
+  }
+
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    font-family: -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+    padding-bottom: 100px;
+  }
+
+  /* Background ambient glow */
+  body::before {
+    content: '';
+    position: fixed;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(ellipse at 30% 20%, var(--accent-glow) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 80%, var(--sky-glow) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    position: relative;
+    z-index: 1;
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 0 16px;
+  }
+
+  /* ─── Header ─── */
+  .header {
+    padding: 20px 0 12px;
+    text-align: center;
+  }
+
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--sky));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 6px;
+    line-height: 1.3;
+  }
+
+  .header .summary {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    max-width: 360px;
+    margin: 0 auto;
+  }
+
+  /* ─── Tags ─── */
+  .tags {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin: 12px 0 20px;
+  }
+
+  .tag {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 20px;
+    background: rgba(45, 212, 191, 0.12);
+    color: var(--accent);
+    border: 1px solid rgba(45, 212, 191, 0.2);
+    letter-spacing: 0.3px;
+  }
+
+  /* ─── Section Tabs ─── */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    background: var(--card-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-radius: 14px;
+    padding: 4px;
+    border: 1px solid var(--card-border);
+  }
+
+  .tab {
+    flex: 1;
+    padding: 10px 6px;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    color: var(--text-secondary);
+    user-select: none;
+  }
+
+  .tab.active {
+    background: linear-gradient(135deg, rgba(45, 212, 191, 0.2), rgba(56, 189, 248, 0.15));
+    color: var(--accent);
+    box-shadow: 0 2px 12px rgba(45, 212, 191, 0.15);
+  }
+
+  .tab:active {
+    transform: scale(0.96);
+  }
+
+  /* ─── Section panels ─── */
+  .section {
+    display: none;
+    animation: fadeIn 0.35s ease;
+  }
+
+  .section.active {
+    display: block;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ─── Key Points ─── */
+  .key-points {
+    margin-bottom: 20px;
+  }
+
+  .section-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    padding-left: 2px;
+  }
+
+  .key-point {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    margin-bottom: 6px;
+    background: var(--card-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-radius: 12px;
+    border: 1px solid var(--card-border);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-primary);
+  }
+
+  .key-point::before {
+    content: '✦';
+    color: var(--accent);
+    font-size: 10px;
+    margin-top: 3px;
+    flex-shrink: 0;
+  }
+
+  /* ─── Timeline ─── */
+  .timeline {
+    position: relative;
+    padding-left: 28px;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 9px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--accent), var(--sky), transparent);
+    border-radius: 2px;
+  }
+
+  .timeline-item {
+    position: relative;
+    margin-bottom: 12px;
+    animation: slideIn 0.4s ease forwards;
+    opacity: 0;
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(-12px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .timeline-dot {
+    position: absolute;
+    left: -23px;
+    top: 16px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid;
+    z-index: 2;
+    transition: all 0.3s ease;
+  }
+
+  .timeline-dot.high   { border-color: var(--high);   background: rgba(239, 68, 68, 0.3); box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
+  .timeline-dot.medium { border-color: var(--medium); background: rgba(245, 158, 11, 0.3); box-shadow: 0 0 8px rgba(245, 158, 11, 0.3); }
+  .timeline-dot.low    { border-color: var(--low);    background: rgba(107, 114, 128, 0.3); }
+  .timeline-dot.done   { border-color: var(--done);   background: rgba(16, 185, 129, 0.3); box-shadow: 0 0 8px rgba(16, 185, 129, 0.4); }
+
+  .timeline-card {
+    background: var(--card-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 14px 16px;
+    transition: all 0.3s ease;
+  }
+
+  .timeline-card:active {
+    transform: scale(0.98);
+  }
+
+  .timeline-card.completed {
+    opacity: 0.55;
+  }
+
+  .timeline-card.completed .task-text {
+    text-decoration: line-through;
+    color: var(--text-secondary);
+  }
+
+  .timeline-time {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--sky);
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .task-text {
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    transition: all 0.3s ease;
+  }
+
+  .task-location {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .task-location::before {
+    content: '📍';
+    font-size: 10px;
+  }
+
+  .priority-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin-top: 8px;
+  }
+
+  .priority-badge.high   { background: rgba(239, 68, 68, 0.15); color: var(--high); }
+  .priority-badge.medium { background: rgba(245, 158, 11, 0.15); color: var(--medium); }
+  .priority-badge.low    { background: rgba(107, 114, 128, 0.15); color: var(--low); }
+
+  /* ─── Todo List ─── */
+  .todo-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    background: var(--card-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    user-select: none;
+  }
+
+  .todo-item:active {
+    transform: scale(0.98);
+  }
+
+  .todo-item.completed {
+    opacity: 0.5;
+  }
+
+  .todo-item.completed .todo-text {
+    text-decoration: line-through;
+    color: var(--text-secondary);
+  }
+
+  .todo-checkbox {
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    border: 2px solid var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.3s ease;
+  }
+
+  .todo-checkbox.checked {
+    background: var(--done);
+    border-color: var(--done);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+  }
+
+  .todo-checkbox.checked::after {
+    content: '✓';
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .todo-content {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .todo-text {
+    font-size: 14px;
+    line-height: 1.4;
+    transition: all 0.3s ease;
+  }
+
+  .todo-meta {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 3px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .todo-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .action-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    border: 1px solid var(--card-border);
+    background: rgba(255,255,255,0.05);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.2s ease;
+  }
+
+  .action-btn:active {
+    transform: scale(0.9);
+    background: rgba(255,255,255,0.1);
+  }
+
+  /* ─── Reschedule Modal ─── */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 100;
+    align-items: flex-end;
+    justify-content: center;
+    animation: fadeOverlay 0.25s ease;
+  }
+
+  .modal-overlay.show {
+    display: flex;
+  }
+
+  @keyframes fadeOverlay {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  .modal-sheet {
+    width: 100%;
+    max-width: 480px;
+    background: var(--bg-secondary);
+    border-radius: 20px 20px 0 0;
+    padding: 20px 20px 32px;
+    animation: slideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    border-top: 1px solid var(--card-border);
+  }
+
+  @keyframes slideUp {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+  }
+
+  .modal-handle {
+    width: 36px;
+    height: 4px;
+    background: var(--text-secondary);
+    border-radius: 4px;
+    margin: 0 auto 16px;
+    opacity: 0.4;
+  }
+
+  .modal-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    text-align: center;
+  }
+
+  .modal-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: center;
+    margin-bottom: 20px;
+  }
+
+  .time-input-wrap {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 20px;
+  }
+
+  .time-input {
+    font-size: 32px;
+    font-weight: 700;
+    text-align: center;
+    background: rgba(255,255,255,0.05);
+    border: 2px solid var(--card-border);
+    border-radius: 14px;
+    color: var(--text-primary);
+    padding: 12px 24px;
+    width: 180px;
+    outline: none;
+    transition: border-color 0.3s ease;
+    font-family: -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  .time-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 20px var(--accent-glow);
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 10px;
+  }
+
+  .modal-btn {
+    flex: 1;
+    padding: 14px;
+    border: none;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: inherit;
+  }
+
+  .modal-btn:active {
+    transform: scale(0.97);
+  }
+
+  .modal-btn.cancel {
+    background: rgba(255,255,255,0.08);
+    color: var(--text-secondary);
+  }
+
+  .modal-btn.confirm {
+    background: linear-gradient(135deg, var(--accent), var(--sky));
+    color: #0F172A;
+  }
+
+  /* ─── Reminder Footer ─── */
+  .reminder-section {
+    margin-top: 8px;
+  }
+
+  .reminder-card {
+    background: var(--card-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 18px 16px;
+  }
+
+  .reminder-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    text-align: center;
+  }
+
+  .reminder-buttons {
+    display: flex;
+    gap: 8px;
+  }
+
+  .reminder-btn {
+    flex: 1;
+    padding: 12px 6px;
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.04);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-align: center;
+    font-family: inherit;
+  }
+
+  .reminder-btn:active {
+    transform: scale(0.94);
+  }
+
+  .reminder-btn.selected {
+    background: linear-gradient(135deg, rgba(45, 212, 191, 0.2), rgba(56, 189, 248, 0.15));
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 16px var(--accent-glow);
+  }
+
+  /* ─── Toast ─── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: var(--bg-secondary);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 12px 24px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    z-index: 200;
+    opacity: 0;
+    transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    white-space: nowrap;
+  }
+
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* ─── Empty state ─── */
+  .empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--text-secondary);
+  }
+
+  .empty-state .icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+  }
+
+  .empty-state p {
+    font-size: 14px;
+  }
+
+  /* ─── Skeleton/Loading ─── */
+  .loading-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    gap: 16px;
+  }
+
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--card-border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .loading-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  /* Stagger animation delays */
+  .timeline-item:nth-child(1) { animation-delay: 0.05s; }
+  .timeline-item:nth-child(2) { animation-delay: 0.1s; }
+  .timeline-item:nth-child(3) { animation-delay: 0.15s; }
+  .timeline-item:nth-child(4) { animation-delay: 0.2s; }
+  .timeline-item:nth-child(5) { animation-delay: 0.25s; }
+  .timeline-item:nth-child(6) { animation-delay: 0.3s; }
+  .timeline-item:nth-child(7) { animation-delay: 0.35s; }
+  .timeline-item:nth-child(8) { animation-delay: 0.4s; }
+  .timeline-item:nth-child(9) { animation-delay: 0.45s; }
+  .timeline-item:nth-child(10) { animation-delay: 0.5s; }
+</style>
+</head>
+<body>
+
+<div class="container" id="app">
+  <div class="loading-wrap" id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loading-text">Loading plan…</div>
+  </div>
+</div>
+
+<!-- Reschedule Modal -->
+<div class="modal-overlay" id="rescheduleModal">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modalTitle">Reschedule</div>
+    <div class="modal-subtitle" id="modalSubtitle"></div>
+    <div class="time-input-wrap">
+      <input type="time" class="time-input" id="newTimeInput">
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn cancel" id="modalCancel">Cancel</button>
+      <button class="modal-btn confirm" id="modalConfirm">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ─── Telegram Web App ───
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    tg.enableClosingConfirmation();
+  }
+
+  // ─── API URL ───
+  const API_BASE = window.WEBAPP_API_URL || window.location.origin;
+
+  // ─── i18n ───
+  const i18n = {
+    en: {
+      loading: 'Loading plan…',
+      timeline: 'Timeline',
+      tasks: 'Tasks',
+      reminder: 'Reminder',
+      keyPoints: 'Key Points',
+      noTasks: 'No tasks yet',
+      noTasksDesc: 'Your plan tasks will appear here',
+      reschedule: 'Reschedule',
+      rescheduleTask: 'Set new time',
+      cancel: 'Cancel',
+      save: 'Save',
+      completed: 'Completed',
+      rescheduled: 'Rescheduled',
+      reminderLabel: 'Remind me before each task',
+      min15: '15 min',
+      min30: '30 min',
+      hr1: '1 hour',
+      hr2: '2 hours',
+      reminderSet: 'Reminder set',
+      high: 'high',
+      medium: 'medium',
+      low: 'low',
+      errorDecode: 'Could not load plan data',
+    },
+    ru: {
+      loading: 'Загрузка плана…',
+      timeline: 'Таймлайн',
+      tasks: 'Задачи',
+      reminder: 'Напоминание',
+      keyPoints: 'Ключевые моменты',
+      noTasks: 'Задач пока нет',
+      noTasksDesc: 'Ваши задачи из плана появятся здесь',
+      reschedule: 'Перенести',
+      rescheduleTask: 'Укажите новое время',
+      cancel: 'Отмена',
+      save: 'Сохранить',
+      completed: 'Выполнено',
+      rescheduled: 'Перенесено',
+      reminderLabel: 'Напомнить перед каждой задачей',
+      min15: '15 мин',
+      min30: '30 мин',
+      hr1: '1 час',
+      hr2: '2 часа',
+      reminderSet: 'Напоминание установлено',
+      high: 'высокий',
+      medium: 'средний',
+      low: 'низкий',
+      errorDecode: 'Не удалось загрузить план',
+    },
+    kk: {
+      loading: 'Жоспар жүктелуде…',
+      timeline: 'Уақыт',
+      tasks: 'Тапсырмалар',
+      reminder: 'Еске салу',
+      keyPoints: 'Негізгі нүктелер',
+      noTasks: 'Тапсырмалар жоқ',
+      noTasksDesc: 'Жоспар тапсырмалары осында пайда болады',
+      reschedule: 'Ауыстыру',
+      rescheduleTask: 'Жаңа уақыт белгілеңіз',
+      cancel: 'Бас тарту',
+      save: 'Сақтау',
+      completed: 'Орындалды',
+      rescheduled: 'Ауыстырылды',
+      reminderLabel: 'Әр тапсырма алдында еске салу',
+      min15: '15 мин',
+      min30: '30 мин',
+      hr1: '1 сағат',
+      hr2: '2 сағат',
+      reminderSet: 'Еске салу орнатылды',
+      high: 'жоғары',
+      medium: 'орташа',
+      low: 'төмен',
+      errorDecode: 'Жоспар деректерін жүктеу мүмкін болмады',
+    }
+  };
+
+  let lang = 'en';
+  function t(key) { return (i18n[lang] && i18n[lang][key]) || i18n.en[key] || key; }
+
+  // ─── Decode plan data from URL hash ───
+  let plan = null;
+
+  function decodePlan() {
+    try {
+      let hash = location.hash.replace(/^#/, '');
+      if (!hash) return null;
+      // Decode base64
+      const json = atob(hash);
+      return JSON.parse(json);
+    } catch (e) {
+      console.error('Failed to decode plan:', e);
+      return null;
+    }
+  }
+
+  // ─── Toast ───
+  function showToast(message) {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.classList.add('show');
+    if (tg) tg.HapticFeedback && tg.HapticFeedback.impactOccurred('light');
+    setTimeout(() => toast.classList.remove('show'), 2400);
+  }
+
+  // ─── API Calls ───
+  async function apiPost(path, body) {
+    try {
+      const fullBody = Object.assign({}, body, {
+        chatId: plan ? plan.chatId : null,
+        userId: plan ? plan.userId : null
+      });
+      const res = await fetch(API_BASE + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fullBody)
+      });
+      return await res.json();
+    } catch (e) {
+      console.error('API error:', e);
+      return null;
+    }
+  }
+
+  // ─── Reschedule Modal ───
+  let rescheduleTaskId = null;
+
+  function openRescheduleModal(taskId, currentTime, taskText) {
+    rescheduleTaskId = taskId;
+    document.getElementById('modalTitle').textContent = t('reschedule');
+    document.getElementById('modalSubtitle').textContent = taskText;
+    const input = document.getElementById('newTimeInput');
+    input.value = currentTime || '12:00';
+    document.getElementById('modalCancel').textContent = t('cancel');
+    document.getElementById('modalConfirm').textContent = t('save');
+    document.getElementById('rescheduleModal').classList.add('show');
+    setTimeout(() => input.focus(), 350);
+  }
+
+  function closeRescheduleModal() {
+    document.getElementById('rescheduleModal').classList.remove('show');
+    rescheduleTaskId = null;
+  }
+
+  document.getElementById('modalCancel').addEventListener('click', closeRescheduleModal);
+  document.getElementById('rescheduleModal').addEventListener('click', function(e) {
+    if (e.target === this) closeRescheduleModal();
+  });
+
+  document.getElementById('modalConfirm').addEventListener('click', async function() {
+    if (!rescheduleTaskId) return;
+    const newTime = document.getElementById('newTimeInput').value;
+    if (!newTime) return;
+
+    await apiPost('/api/todo/reschedule', { taskId: rescheduleTaskId, newTime: newTime });
+
+    // Update local state
+    const todo = plan.todos.find(t => t.id === rescheduleTaskId);
+    if (todo) {
+      todo.time = newTime;
+      renderAll();
+    }
+
+    showToast('✅ ' + t('rescheduled'));
+    closeRescheduleModal();
+  });
+
+  // ─── Render Functions ───
+  let activeTab = 'timeline';
+
+  function sortByTime(todos) {
+    return [...todos].sort((a, b) => {
+      const ta = a.time || '99:99';
+      const tb = b.time || '99:99';
+      return ta.localeCompare(tb);
+    });
+  }
+
+  function renderHeader() {
+    return `
+      <div class="header">
+        <h1>${escHtml(plan.title || '')}</h1>
+        ${plan.summary ? `<p class="summary">${escHtml(plan.summary)}</p>` : ''}
+      </div>
+      ${plan.tags && plan.tags.length ? `
+        <div class="tags">
+          ${plan.tags.map(tag => `<span class="tag">${escHtml(tag)}</span>`).join('')}
+        </div>
+      ` : ''}
+    `;
+  }
+
+  function renderTabs() {
+    return `
+      <div class="tabs">
+        <div class="tab ${activeTab === 'timeline' ? 'active' : ''}" data-tab="timeline">📋 ${t('timeline')}</div>
+        <div class="tab ${activeTab === 'tasks' ? 'active' : ''}" data-tab="tasks">✅ ${t('tasks')}</div>
+        <div class="tab ${activeTab === 'reminder' ? 'active' : ''}" data-tab="reminder">🔔 ${t('reminder')}</div>
+      </div>
+    `;
+  }
+
+  function renderKeyPoints() {
+    if (!plan.key_points || !plan.key_points.length) return '';
+    return `
+      <div class="key-points">
+        <div class="section-label">${t('keyPoints')}</div>
+        ${plan.key_points.map(kp => `<div class="key-point">${escHtml(kp)}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  function renderTimeline() {
+    const sorted = sortByTime(plan.todos || []);
+    if (!sorted.length) {
+      return `
+        <div class="section active" id="section-timeline">
+          <div class="empty-state">
+            <div class="icon">📭</div>
+            <p>${t('noTasks')}</p>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="section ${activeTab === 'timeline' ? 'active' : ''}" id="section-timeline">
+        <div class="timeline">
+          ${sorted.map((todo, i) => {
+            const dotClass = todo.done ? 'done' : (todo.priority || 'low');
+            const cardClass = todo.done ? 'completed' : '';
+            return `
+              <div class="timeline-item" style="animation-delay:${i * 0.06}s">
+                <div class="timeline-dot ${dotClass}"></div>
+                <div class="timeline-card ${cardClass}">
+                  <div class="timeline-time">${escHtml(todo.time || '--:--')}</div>
+                  <div class="task-text">${escHtml(todo.task)}</div>
+                  ${todo.location ? `<div class="task-location">${escHtml(todo.location)}</div>` : ''}
+                  <span class="priority-badge ${todo.priority || 'low'}">${t(todo.priority || 'low')}</span>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderTasks() {
+    const sorted = sortByTime(plan.todos || []);
+    if (!sorted.length) {
+      return `
+        <div class="section ${activeTab === 'tasks' ? 'active' : ''}" id="section-tasks">
+          <div class="empty-state">
+            <div class="icon">📭</div>
+            <p>${t('noTasks')}</p>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="section ${activeTab === 'tasks' ? 'active' : ''}" id="section-tasks">
+        ${sorted.map(todo => {
+          const doneClass = todo.done ? 'completed' : '';
+          const checkedClass = todo.done ? 'checked' : '';
+          return `
+            <div class="todo-item ${doneClass}" data-id="${todo.id}">
+              <div class="todo-checkbox ${checkedClass}" data-action="toggle" data-id="${todo.id}"></div>
+              <div class="todo-content" data-action="toggle" data-id="${todo.id}">
+                <div class="todo-text">${escHtml(todo.task)}</div>
+                <div class="todo-meta">
+                  <span>🕐 ${escHtml(todo.time || '--:--')}</span>
+                  ${todo.location ? `<span>📍 ${escHtml(todo.location)}</span>` : ''}
+                </div>
+              </div>
+              <div class="todo-actions">
+                <div class="action-btn" data-action="reschedule" data-id="${todo.id}" data-time="${todo.time || ''}" data-task="${escAttr(todo.task)}">⏰</div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  function renderReminder() {
+    const offsets = [
+      { min: 15, label: t('min15') },
+      { min: 30, label: t('min30') },
+      { min: 60, label: t('hr1') },
+      { min: 120, label: t('hr2') },
+    ];
+
+    return `
+      <div class="section ${activeTab === 'reminder' ? 'active' : ''}" id="section-reminder">
+        <div class="reminder-section">
+          <div class="reminder-card">
+            <div class="reminder-label">🔔 ${t('reminderLabel')}</div>
+            <div class="reminder-buttons">
+              ${offsets.map(o => `
+                <button class="reminder-btn ${selectedReminder === o.min ? 'selected' : ''}" data-action="reminder" data-minutes="${o.min}">
+                  ${o.label}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  let selectedReminder = null;
+
+  function renderAll() {
+    const app = document.getElementById('app');
+    app.innerHTML = renderHeader() + renderKeyPoints() + renderTabs() + renderTimeline() + renderTasks() + renderReminder();
+    attachListeners();
+  }
+
+  function attachListeners() {
+    // Tabs
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', function() {
+        activeTab = this.dataset.tab;
+        renderAll();
+      });
+    });
+
+    // Toggle todo
+    document.querySelectorAll('[data-action="toggle"]').forEach(el => {
+      el.addEventListener('click', async function(e) {
+        e.stopPropagation();
+        const id = this.dataset.id;
+        const todo = plan.todos.find(t => t.id === id);
+        if (!todo) return;
+        todo.done = !todo.done;
+        renderAll();
+
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+        showToast(todo.done ? '✅ ' + t('completed') : '↩️ Undo');
+        await apiPost('/api/todo/complete', { taskId: id, done: todo.done });
+      });
+    });
+
+    // Reschedule
+    document.querySelectorAll('[data-action="reschedule"]').forEach(el => {
+      el.addEventListener('click', function(e) {
+        e.stopPropagation();
+        openRescheduleModal(this.dataset.id, this.dataset.time, this.dataset.task);
+      });
+    });
+
+    // Reminder
+    document.querySelectorAll('[data-action="reminder"]').forEach(el => {
+      el.addEventListener('click', async function() {
+        const minutes = parseInt(this.dataset.minutes);
+        selectedReminder = minutes;
+        renderAll();
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+        showToast('🔔 ' + t('reminderSet'));
+        await apiPost('/api/todo/reminder', { offsetMinutes: minutes });
+      });
+    });
+  }
+
+  // ─── Helpers ───
+  function escHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function escAttr(str) {
+    return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ─── Init ───
+  function init() {
+    plan = decodePlan();
+
+    if (!plan) {
+      // Show demo/error
+      document.getElementById('loading-text').textContent = t('errorDecode');
+      document.getElementById('loading').innerHTML = `
+        <div class="empty-state">
+          <div class="icon">📋</div>
+          <p>${i18n.en.errorDecode}</p>
+          <p style="margin-top:8px;font-size:12px;color:var(--text-secondary)">Pass plan data as base64 JSON in URL hash</p>
+        </div>
+      `;
+      return;
+    }
+
+    // Set language
+    lang = plan.language || 'en';
+    if (!i18n[lang]) lang = 'en';
+    document.documentElement.lang = lang;
+
+    // Render
+    renderAll();
+  }
+
+  // Wait for DOM
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>

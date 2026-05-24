@@ -25,7 +25,7 @@ export async function transcribeAudio(filePath: string): Promise<string> {
     const response = await groq.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
       model: 'whisper-large-v3',
-      language: 'ru', // Default to Russian, Whisper auto-detects well
+      // No language param — auto-detect (supports RU, EN, KK)
     });
 
     const transcript = response.text.trim();
