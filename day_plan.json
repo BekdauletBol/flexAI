@@ -1,54 +1,44 @@
 {
-  "863340643": {
-    "chatId": 863340643,
-    "userId": 863340643,
-    "title": "Планы на день: работа и футбол",
-    "summary": "Пользователь планирует сделать домашку в 15:19, затем поесть, пойти на работу и поиграть в футбол в 19:00.",
+  "728554297": {
+    "chatId": 728554297,
+    "userId": 728554297,
+    "title": "Планы на вечер с Бекой",
+    "summary": "Пользователь планирует играть в волейбол или баскетбол ближе к ночи и ждет Беку.",
     "key_points": [
-      "Сделать домашку в 15:19",
-      "Покушать перед работой",
-      "Пойти на работу",
-      "Поиграть в футбол в 19:00"
+      "Игры в волейбол или баскетбол",
+      "Ожидание Беки"
     ],
     "todos": [
       {
-        "id": "c84f7487-f349-4100-bfb3-1a72db41533f",
-        "task": "Сделать домашку",
-        "priority": "high",
-        "done": false,
-        "time": "15:19",
-        "duration": 30
-      },
-      {
-        "id": "47a54812-b800-4a67-b944-ef920b0a39c6",
-        "task": "Покушать",
+        "id": "e6d09f85-f647-4fe4-8bda-e3a2e293f4c6",
+        "task": "Играть в волейбол или баскетбол",
         "priority": "medium",
         "done": false,
-        "duration": 30
-      },
-      {
-        "id": "e462986b-f354-45b4-ae21-687fa3bca6ec",
-        "task": "Пойти на работу",
-        "priority": "high",
-        "done": false,
-        "duration": 120
-      },
-      {
-        "id": "54f7c536-1d18-4e08-87fa-e5b00315119d",
-        "task": "Поиграть в футбол",
-        "priority": "medium",
-        "done": false,
-        "time": "19:00",
         "duration": 60
       }
     ],
     "tags": [
-      "#планы",
-      "#домашка",
-      "#работа",
-      "#футбол"
+      "#спорт",
+      "#вечер",
+      "#планы"
     ],
     "language": "ru",
-    "createdAt": "2026-05-24T14:01:40.623Z"
+    "createdAt": "2026-06-06T17:48:01.100Z"
+  },
+  "863340643": {
+    "chatId": 863340643,
+    "userId": 863340643,
+    "title": "Mention of Astana city",
+    "summary": "The transcript mentions the city of Astana. No specific tasks or actionable items are provided.",
+    "key_points": [
+      "Astana is mentioned",
+      "No tasks identified"
+    ],
+    "todos": [],
+    "tags": [
+      "#Astana"
+    ],
+    "language": "ru",
+    "createdAt": "2026-06-09T20:23:11.363Z"
   }
 }

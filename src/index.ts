@@ -23,7 +23,7 @@ bot.command('start', async (ctx) => {
     '4. Set reminders for timed tasks ⏰\n\n' +
     '📍 Use /setlocation to enable weather & route directions!\n\n' +
     '💡 Supports: 🇬🇧 English · 🇷🇺 Russian · 🇰🇿 Kazakh\n\n' +
-    'Try: "At 3pm I need to call the dentist"'
+    'Try: "At 3pm I need to call Nazarbayev"'
   );
 });
 
