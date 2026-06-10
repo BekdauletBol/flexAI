@@ -96,26 +96,6 @@ npm start
 | DOCX | docx |
 | Конвертация аудио | ffmpeg |
 
-## Структура проекта
-
-```
-voice-bot/
-├── src/
-│   ├── index.ts           # Точка входа бота
-│   ├── config.ts          # Конфигурация (.env)
-│   ├── handlers/
-│   │   └── voice.ts       # Обработчик голосовых сообщений
-│   ├── services/
-│   │   ├── whisper.ts     # Транскрипция (GPT-4o audio)
-│   │   ├── analysis.ts    # Анализ (GPT-4o JSON)
-│   │   └── docx.ts        # Генерация Word-документа
-│   └── types/
-│       └── analysis.ts    # TypeScript интерфейсы
-├── .env.example
-├── package.json
-├── tsconfig.json
-└── README.md
-```
 
 ## Обработка ошибок
 
