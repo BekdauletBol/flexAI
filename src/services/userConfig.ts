@@ -5,6 +5,7 @@ export interface UserSettings {
   city?: string;
   lat?: number;
   lng?: number;
+  language?: 'ru' | 'en' | 'kk';
   reminder_offset_minutes: number;
 }
 
@@ -27,6 +28,13 @@ load();
 
 export function getUserConfig(userId: number): UserSettings {
   return configs[String(userId)] || { reminder_offset_minutes: 30 };
+}
+
+export function setUserLanguage(userId: number, lang: 'ru' | 'en' | 'kk') {
+  const existing = getUserConfig(userId);
+  configs[String(userId)] = { ...existing, language: lang };
+  save();
+  console.log(`[UserConfig] Language set for ${userId}: ${lang}`);
 }
 
 export function setUserLocation(userId: number, city: string, lat: number, lng: number) {

@@ -88,3 +88,13 @@ export function getPlanForWebApp(chatId: number) {
     language: plan.language,
   };
 }
+
+export function getUserTasks(userId: number): TodoItem[] {
+  const allTasks: TodoItem[] = [];
+  for (const plan of plans.values()) {
+    if (plan.userId === userId) {
+      allTasks.push(...plan.todos);
+    }
+  }
+  return allTasks;
+}

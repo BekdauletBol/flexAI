@@ -68,14 +68,25 @@ export async function searchPlace(query: string): Promise<PlaceResult | null> {
 }
 
 /** Get weather forecast for a specific datetime */
-export async function getWeatherForecast(lat: number, lng: number, datetime: string): Promise<WeatherResult | null> {
+export async function getWeatherForecast(lat: number, lng: number, datetime: string, lang: string = 'en'): Promise<WeatherResult | null> {
   if (!config.openweatherApiKey) return null;
   try {
-    const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lng}&appid=${config.openweatherApiKey}&units=metric&lang=ru`;
+    const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lng}&appid=${config.openweatherApiKey}&units=metric&lang=${lang}`;
+    console.log(`[Location] Fetching weather from ${url}`);
     const res = await fetch(url);
     const data = await res.json() as any;
 
+    if (data.cod !== '200') {
+      console.error('[Location] Weather API error:', data.message);
+      return null;
+    }
+
     const targetTime = new Date(datetime).getTime();
+    if (isNaN(targetTime)) {
+      console.error('[Location] Invalid datetime for weather:', datetime);
+      return null;
+    }
+
     let closest = data.list?.[0];
     let minDiff = Infinity;
 
@@ -84,7 +95,13 @@ export async function getWeatherForecast(lat: number, lng: number, datetime: str
       if (diff < minDiff) { minDiff = diff; closest = item; }
     }
 
-    if (!closest) return null;
+    if (!closest) {
+      console.warn('[Location] No weather forecast found for', datetime);
+      return null;
+    }
+
+    console.log(`[Location] Found weather for ${datetime}: ${closest.main.temp}°C, ${closest.weather[0]?.description}`);
+
     return {
       temp: Math.round(closest.main.temp),
       feels_like: Math.round(closest.main.feels_like),
@@ -105,10 +122,19 @@ export async function getDirections(originLat: number, originLng: number, destQu
   try {
     const origin = `${originLat},${originLng}`;
     const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${encodeURIComponent(destQuery)}&mode=driving&key=${config.googleMapsApiKey}`;
+    console.log(`[Location] Fetching directions: ${origin} -> ${destQuery}`);
     const res = await fetch(url);
     const data = await res.json() as any;
+    
+    if (data.status !== 'OK') {
+      console.error('[Location] Directions API error:', data.status, data.error_message);
+      return null;
+    }
+
     const route = data.routes?.[0]?.legs?.[0];
     if (!route) return null;
+
+    console.log(`[Location] Directions found: ${route.distance.text}, ${route.duration.text}`);
 
     return {
       duration: route.duration.text,
@@ -161,22 +187,71 @@ export async function generateLocationAdvice(
 
 /** Reverse geocode coordinates to get a city or location name */
 export async function reverseGeocode(lat: number, lng: number): Promise<string> {
-  if (!config.googleMapsApiKey) return 'My Location';
+  // 1. Try Google Maps if API key is available
+  if (config.googleMapsApiKey) {
+    try {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${config.googleMapsApiKey}`;
+      const res = await fetch(url);
+      const data = await res.json() as any;
+      const result = data.results?.[0];
+      if (result) {
+        // Find city from address components
+        for (const comp of result.address_components || []) {
+          if (comp.types.includes('locality')) {
+            return comp.long_name;
+          }
+        }
+        return result.formatted_address || 'My Location';
+      }
+    } catch (e) {
+      console.warn('[Location] Google Reverse Geocode failed, trying fallback...', e);
+    }
+  }
+
+  // 2. Fallback: BigDataCloud (No key required for basic use)
   try {
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${config.googleMapsApiKey}`;
+    const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`;
     const res = await fetch(url);
     const data = await res.json() as any;
-    const result = data.results?.[0];
-    if (!result) return 'My Location';
-
-    // Find city from address components
-    for (const comp of result.address_components || []) {
-      if (comp.types.includes('locality')) {
-        return comp.long_name;
-      }
+    const city = data.city || data.locality || data.principalSubdivision;
+    if (city) {
+      console.log(`[Location] Resolved via BigDataCloud: ${city}`);
+      return city;
     }
-    return result.formatted_address || 'My Location';
-  } catch {
-    return 'My Location';
+  } catch (err) {
+    console.error('[Location] Fallback geocoding failed:', err);
   }
+
+  return 'My Location';
+}
+
+/** Resolve a city name to coordinates */
+export async function geocodeCity(cityName: string): Promise<{ lat: number, lng: number } | null> {
+  // 1. Try Google Maps
+  if (config.googleMapsApiKey) {
+    try {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cityName)}&key=${config.googleMapsApiKey}`;
+      const res = await fetch(url);
+      const data = await res.json() as any;
+      if (data.results?.[0]?.geometry?.location) {
+        return data.results[0].geometry.location;
+      }
+    } catch (e) {
+      console.warn('[Location] Google Geocode failed:', e);
+    }
+  }
+
+  // 2. Fallback: OpenStreetMap (Nominatim) - No key required
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cityName)}&format=json&limit=1`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'VoiceBot/1.0' } });
+    const data = await res.json() as any;
+    if (data[0]) {
+      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+    }
+  } catch (err) {
+    console.error('[Location] OSM Geocode failed:', err);
+  }
+
+  return null;
 }

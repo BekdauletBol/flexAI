@@ -28,17 +28,28 @@
   "863340643": {
     "chatId": 863340643,
     "userId": 863340643,
-    "title": "Mention of Astana city",
-    "summary": "The transcript mentions the city of Astana. No specific tasks or actionable items are provided.",
+    "title": "Visit Starbucks in Mega Silkway",
+    "summary": "The user plans to visit Starbucks located in Mega Silkway, Astana. No specific time was mentioned.",
     "key_points": [
-      "Astana is mentioned",
-      "No tasks identified"
+      "Visit Starbucks",
+      "Location: Mega Silkway, Astana"
     ],
-    "todos": [],
+    "todos": [
+      {
+        "id": "8fddf58d-cb8a-4a5c-ba28-7e39a1d04eb1",
+        "task": "Visit Starbucks in Mega Silkway",
+        "priority": "medium",
+        "done": false,
+        "duration": 30,
+        "location": "Mega Silkway, Astana"
+      }
+    ],
     "tags": [
-      "#Astana"
+      "#Starbucks",
+      "#Astana",
+      "#MegaSilkway"
     ],
     "language": "ru",
-    "createdAt": "2026-06-09T20:23:11.363Z"
+    "createdAt": "2026-06-10T06:17:10.218Z"
   }
 }

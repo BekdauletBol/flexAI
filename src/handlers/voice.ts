@@ -81,16 +81,17 @@ export async function handleVoice(ctx: Context) {
 
     // 6. Check Location Assistant
     let locationAdvice = '';
-    if (analysis.needs_location_check && analysis.location_query && analysis.visit_datetime) {
+    if (analysis.location_query) {
       await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '📍 Checking location details...');
       
       const userSettings = getUserConfig(userId);
       const hasCoords = userSettings.lat !== undefined && userSettings.lng !== undefined;
+      const targetTime = analysis.visit_datetime || new Date().toISOString();
 
       try {
         const placePromise = searchPlace(analysis.location_query);
         const weatherPromise = hasCoords 
-          ? getWeatherForecast(userSettings.lat!, userSettings.lng!, analysis.visit_datetime)
+          ? getWeatherForecast(userSettings.lat!, userSettings.lng!, targetTime, analysis.language)
           : Promise.resolve(null);
         const directionsPromise = hasCoords
           ? getDirections(userSettings.lat!, userSettings.lng!, analysis.location_query)
@@ -100,7 +101,7 @@ export async function handleVoice(ctx: Context) {
 
         locationAdvice = await generateLocationAdvice(
           analysis.location_query,
-          analysis.visit_datetime,
+          targetTime,
           place,
           weather,
           directions,
@@ -109,7 +110,7 @@ export async function handleVoice(ctx: Context) {
 
         if (!hasCoords) {
           const coordTip = analysis.language === 'ru' 
-            ? '\n\n💡 *Подсказка:* Чтобы бот мог построить маршрут и показать погоду, отправьте свою геолокацию с помощью кнопки /setlocation.'
+            ? '\n\n💡 *Подсказка:* Чтобы бот мог построить маршрут и показать погоду, отправьте свою геолокацию с помощью команды /setlocation.'
             : analysis.language === 'kk'
             ? '\n\n💡 *Кеңес:* Маршрут құру және ауа райын білу үшін /setlocation командасы арқылы геолокацияңызды жіберіңіз.'
             : '\n\n💡 *Tip:* To get route directions and weather forecast, send your location coordinates using the /setlocation command.';
@@ -195,6 +196,29 @@ export async function handleVoice(ctx: Context) {
       `${summaryTitle}\n\n*${analysis.title}*\n${analysis.summary}\n\n${tasksTitle}\n${todoLines}\n\n🏷 ${analysis.tags.join(', ') || '—'}${reminderNote}`,
       { parse_mode: 'Markdown', reply_markup: webAppKeyboard }
     );
+
+    // 10. Motivation Assistant
+    const taskCount = analysis.todos.length;
+    if (taskCount > 0) {
+      let photoPath = '';
+      let caption = '';
+
+      if (taskCount <= 2) {
+        photoPath = path.resolve(process.cwd(), 'assets/dump.png');
+        caption = analysis.language === 'ru' ? 'Yooo, почему ты не занят? 🤨' 
+                : analysis.language === 'kk' ? 'Yooo, неге бос отырсың? 🤨'
+                : 'Yooo, why are you not busy? 🤨';
+      } else {
+        photoPath = path.resolve(process.cwd(), 'assets/smart.png');
+        caption = analysis.language === 'ru' ? 'Ты босс! 😎 Столько дел!' 
+                : analysis.language === 'kk' ? 'Сен бастықсың! 😎 Қаншама шаруа!'
+                : 'You are a boss! 😎 So many tasks!';
+      }
+
+      if (fs.existsSync(photoPath)) {
+        await ctx.replyWithPhoto(new InputFile(photoPath), { caption });
+      }
+    }
 
     try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
     console.log(`[Voice] ✅ processed voice note "${analysis.title}" [${analysis.language}]`);

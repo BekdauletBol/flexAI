@@ -51,12 +51,17 @@ Guidelines:
 
 export async function analyzeTranscript(transcript: string): Promise<AnalysisResult> {
   try {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const timeStr = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    const contextPrompt = `\n\nCURRENT CONTEXT:\n- Today is ${dateStr}\n- Current time is ${timeStr}\n\nUse this context to resolve relative dates like "tomorrow", "next Friday", etc. into absolute ISO strings.`;
+
     console.log(`[Analysis] Analyzing (${transcript.length} chars)...`);
 
     const response = await openai.chat.completions.create({
       model: config.openaiModel,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: SYSTEM_PROMPT + contextPrompt },
         { role: 'user', content: `Analyze this transcript:\n\n"${transcript}"` },
       ],
       response_format: { type: 'json_object' },
