@@ -1,55 +1,736 @@
 {
-  "728554297": {
-    "chatId": 728554297,
-    "userId": 728554297,
-    "title": "Планы на вечер с Бекой",
-    "summary": "Пользователь планирует играть в волейбол или баскетбол ближе к ночи и ждет Беку.",
-    "key_points": [
-      "Игры в волейбол или баскетбол",
-      "Ожидание Беки"
-    ],
-    "todos": [
+  "__version": 2,
+  "userPlans": {
+    "728554297": [
       {
-        "id": "e6d09f85-f647-4fe4-8bda-e3a2e293f4c6",
-        "task": "Играть в волейбол или баскетбол",
-        "priority": "medium",
-        "done": false,
-        "duration": 60
+        "chatId": 728554297,
+        "userId": 728554297,
+        "title": "Планы на вечер с Бекой",
+        "summary": "Пользователь планирует играть в волейбол или баскетбол ближе к ночи и ждет Беку.",
+        "key_points": [
+          "Игры в волейбол или баскетбол",
+          "Ожидание Беки"
+        ],
+        "todos": [
+          {
+            "id": "e6d09f85-f647-4fe4-8bda-e3a2e293f4c6",
+            "task": "Играть в волейбол или баскетбол",
+            "priority": "medium",
+            "done": false,
+            "duration": 60
+          }
+        ],
+        "tags": [
+          "#спорт",
+          "#вечер",
+          "#планы"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-06T17:48:01.100Z"
       }
     ],
-    "tags": [
-      "#спорт",
-      "#вечер",
-      "#планы"
-    ],
-    "language": "ru",
-    "createdAt": "2026-06-06T17:48:01.100Z"
+    "863340643": [
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Visit Starbucks in Mega Silkway",
+        "summary": "The user plans to visit Starbucks located in Mega Silkway, Astana. No specific time was mentioned.",
+        "key_points": [
+          "Visit Starbucks",
+          "Location: Mega Silkway, Astana"
+        ],
+        "todos": [
+          {
+            "id": "8fddf58d-cb8a-4a5c-ba28-7e39a1d04eb1",
+            "task": "Visit Starbucks in Mega Silkway",
+            "priority": "medium",
+            "done": false,
+            "duration": 30,
+            "location": "Mega Silkway, Astana"
+          }
+        ],
+        "tags": [
+          "#Starbucks",
+          "#Astana",
+          "#MegaSilkway"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-10T06:17:10.218Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Күнделікті жоспарлар туралы жазба",
+        "summary": "Пайдаланушы бүгінгі күнге бірнеше жоспарларын айтты: жұмыс, түскі ас, футбол ойнау және ұйықтау. Барлық әрекеттер нақты уақытпен белгіленген.",
+        "key_points": [
+          "Жұмыс жасау сағат 12-де",
+          "Футбол ойнау сағат 15:00-16:00 аралығында"
+        ],
+        "todos": [
+          {
+            "id": "a051b349-0d1b-44e4-957e-f5265b2b7639",
+            "task": "Жұмыс жасау",
+            "priority": "medium",
+            "done": false,
+            "time": "12:00",
+            "date": "2026-06-11",
+            "duration": 60
+          },
+          {
+            "id": "2f585753-9525-48f0-b851-b70f7c076f4f",
+            "task": "Түскі ас ішу",
+            "priority": "medium",
+            "done": false,
+            "time": "13:00",
+            "date": "2026-06-11",
+            "duration": 60
+          },
+          {
+            "id": "c2619a50-d09c-46f3-ba51-977df7dc9f1c",
+            "task": "Футбол ойнау",
+            "priority": "medium",
+            "done": false,
+            "time": "15:00",
+            "date": "2026-06-11",
+            "duration": 60
+          },
+          {
+            "id": "04a7a74b-ad53-47c7-9855-21a5cb3b3935",
+            "task": "Ұйықтау",
+            "priority": "medium",
+            "done": false,
+            "time": "21:00",
+            "date": "2026-06-11",
+            "duration": 480
+          }
+        ],
+        "tags": [
+          "#күнтізбе",
+          "#жоспар",
+          "#күнделікті"
+        ],
+        "language": "kk",
+        "createdAt": "2026-06-11T14:35:04.504Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Встреча с психологом в Астане",
+        "summary": "Пользователь упомянул запись к психологу 15 июня в 19:00 в Астане.",
+        "key_points": [
+          "Запись к психологу",
+          "Дата и время: 15 июня, 19:00",
+          "Место: Астана"
+        ],
+        "todos": [
+          {
+            "id": "e1558059-bcb0-4003-adf4-f813f57b947b",
+            "task": "Посетить психолога",
+            "priority": "high",
+            "done": false,
+            "time": "19:00",
+            "date": "2026-06-15",
+            "duration": 60,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#психолог",
+          "#Астана",
+          "#встреча"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T14:36:46.627Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Запись к стоматологу в Астане",
+        "summary": "Пользователь записан к стоматологу 15 июня в 19:00 в Астане. Нужно проверить местоположение клиники.",
+        "key_points": [
+          "Запись к стоматологу",
+          "Дата и время: 15 июня, 19:00"
+        ],
+        "todos": [
+          {
+            "id": "af80252e-a812-412a-bc9f-3c29f267d7c5",
+            "task": "Посетить стоматолога",
+            "priority": "high",
+            "done": false,
+            "time": "19:00",
+            "date": "2026-06-15",
+            "duration": 30,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#стоматолог",
+          "#Астана",
+          "#встреча"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T14:37:06.727Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Запись к стоматологу 15 июня",
+        "summary": "Пользователь сообщил о записи к стоматологу 15 июня в 19:00 в Астане.",
+        "key_points": [
+          "Запись к стоматологу",
+          "Дата и время: 15 июня, 19:00"
+        ],
+        "todos": [
+          {
+            "id": "ecf16978-c638-4121-aed3-2bdc34cd4ba5",
+            "task": "Посетить стоматолога",
+            "priority": "high",
+            "done": false,
+            "time": "19:00",
+            "date": "2026-06-15",
+            "duration": 30,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#стоматолог",
+          "#Астана",
+          "#запись"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T14:56:00.389Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Запись к психологу в Астане",
+        "summary": "Пользователь записан к психологу 15 июня в 19:00 в Астане. Нужно посетить встречу вовремя.",
+        "key_points": [
+          "Запись к психологу",
+          "Дата и время: 15 июня, 19:00"
+        ],
+        "todos": [
+          {
+            "id": "d2f4cf67-0fe4-4ae2-9aa8-6dde9b9224ac",
+            "task": "Посетить запись к психологу",
+            "priority": "high",
+            "done": false,
+            "time": "19:00",
+            "date": "2026-06-15",
+            "duration": 60,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#психолог",
+          "#Астана",
+          "#встреча"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T14:56:11.502Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Запись к психологу в Астане",
+        "summary": "Пользователь записан к психологу 15 июня в 19:00 в Астане.",
+        "key_points": [
+          "Запись к психологу",
+          "Дата и время: 15 июня, 19:00"
+        ],
+        "todos": [
+          {
+            "id": "610b5548-94fc-4ee4-8011-a4ff4bb860b9",
+            "task": "Посетить психолога",
+            "priority": "medium",
+            "done": false,
+            "time": "19:00",
+            "date": "2026-06-15",
+            "duration": 60,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#психолог",
+          "#Астана",
+          "#встреча"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T15:56:30.942Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Визит к стоматологу в Астане",
+        "summary": "Пользователь упомянул запись к стоматологу 15 июня в 19:00 в Астане.",
+        "key_points": [
+          "Запись к стоматологу",
+          "Дата: 15 июня, время: 19:00"
+        ],
+        "todos": [
+          {
+            "id": "91afb20e-c3bf-4210-a464-08fb86c91356",
+            "task": "Посетить стоматолога",
+            "priority": "high",
+            "done": false,
+            "time": "19:00",
+            "date": "2026-06-15",
+            "duration": 30,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#стоматолог",
+          "#Астана",
+          "#встреча"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T15:57:18.512Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Запись к стоматологу в Астане",
+        "summary": "Пользователь упомянул запись к стоматологу 15 июня в 19:00 в Астане.",
+        "key_points": [
+          "Запись у стоматолога",
+          "Дата: 15 июня, время: 19:00"
+        ],
+        "todos": [
+          {
+            "id": "52ecf0bd-5dd0-4da4-8b6c-563fd65c0753",
+            "task": "Посетить стоматолога",
+            "priority": "high",
+            "done": false,
+            "time": "11:40",
+            "date": "2026-06-15",
+            "duration": 30,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#стоматолог",
+          "#Астана",
+          "#запись"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T15:59:03.462Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Daily morning and evening tasks",
+        "summary": "The user plans to wake up at 9 a.m., have breakfast at 9:30 a.m., go to school, and sleep by 8 p.m. in the evening.",
+        "key_points": [
+          "Wake up at 9 a.m.",
+          "Breakfast at 9:30 a.m.",
+          "Go to school",
+          "Sleep at 8 p.m."
+        ],
+        "todos": [
+          {
+            "id": "ca72a131-567d-42f8-bbcb-7bc3fd33a749",
+            "task": "Wake up",
+            "priority": "medium",
+            "done": false,
+            "time": "09:00",
+            "date": "2026-06-12",
+            "duration": 10
+          },
+          {
+            "id": "27cb081b-e0b8-49aa-a7be-3e8a686ad8aa",
+            "task": "Have breakfast",
+            "priority": "medium",
+            "done": false,
+            "time": "09:30",
+            "date": "2026-06-12",
+            "duration": 30
+          },
+          {
+            "id": "28c276a1-2560-482f-8c40-413f8818ceb0",
+            "task": "Go to school",
+            "priority": "medium",
+            "done": false,
+            "date": "2026-06-12",
+            "duration": 120,
+            "location": "School"
+          },
+          {
+            "id": "452a8691-521d-4254-8d65-f5c9728b7d0b",
+            "task": "Sleep",
+            "priority": "medium",
+            "done": false,
+            "time": "20:00",
+            "date": "2026-06-12",
+            "duration": 480
+          }
+        ],
+        "tags": [
+          "#morning",
+          "#evening",
+          "#routine"
+        ],
+        "language": "en",
+        "createdAt": "2026-06-11T15:59:22.938Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Daily routine tasks overview",
+        "summary": "The user outlines a morning and evening routine, including waking up, having breakfast, going to school, and sleeping. Specific times are mentioned for each activity.",
+        "key_points": [
+          "Wake up at 9 a.m.",
+          "Breakfast at 9:30 a.m.",
+          "Go to school after breakfast",
+          "Sleep at 8 p.m."
+        ],
+        "todos": [
+          {
+            "id": "8fe74731-38da-48f0-884f-e0dd237ca62b",
+            "task": "Wake up",
+            "priority": "medium",
+            "done": false,
+            "time": "09:00",
+            "date": "2026-06-12",
+            "duration": 10
+          },
+          {
+            "id": "3f7e36e6-5450-4f9e-be05-fcb99d87aa4c",
+            "task": "Have breakfast",
+            "priority": "medium",
+            "done": false,
+            "time": "09:30",
+            "date": "2026-06-12",
+            "duration": 30
+          },
+          {
+            "id": "4af1f771-42f3-4b0b-9e35-07f7d25b2318",
+            "task": "Go to school",
+            "priority": "medium",
+            "done": false,
+            "date": "2026-06-12",
+            "duration": 60
+          },
+          {
+            "id": "8a078abe-4c32-4a47-8dc3-b7a52108c1c6",
+            "task": "Sleep",
+            "priority": "medium",
+            "done": false,
+            "time": "20:00",
+            "date": "2026-06-12",
+            "duration": 480
+          }
+        ],
+        "tags": [
+          "#routine",
+          "#daily",
+          "#schedule"
+        ],
+        "language": "en",
+        "createdAt": "2026-06-11T15:59:50.475Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Запись к психологу в Астане",
+        "summary": "Пользователь упомянул запись к психологу в Астане на 15 июня в 19:00.",
+        "key_points": [
+          "Запись к психологу",
+          "Дата: 15 июня, время: 19:00"
+        ],
+        "todos": [
+          {
+            "id": "d04023b3-d99f-4900-b31d-0b6589d3d54d",
+            "task": "Посетить психолога",
+            "priority": "high",
+            "done": false,
+            "time": "19:00",
+            "date": "2026-06-15",
+            "duration": 60,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#психолог",
+          "#Астана",
+          "#встреча"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T16:19:40.183Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Запись к психологу 15 июня",
+        "summary": "Пользователь сообщил о записи к психологу 15 июня в 19:00 в Астане.",
+        "key_points": [
+          "Запись к психологу",
+          "Дата: 15 июня",
+          "Время: 19:00",
+          "Место: Астана"
+        ],
+        "todos": [
+          {
+            "id": "b8f9fa34-6ce4-4a3d-906e-71bad90e213e",
+            "task": "Посетить психолога",
+            "priority": "high",
+            "done": false,
+            "time": "19:00",
+            "date": "2026-06-15",
+            "duration": 60,
+            "location": "Астана"
+          }
+        ],
+        "tags": [
+          "#психолог",
+          "#Астана",
+          "#встреча"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T16:25:15.539Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Запрос о времени посещения зала",
+        "summary": "Пользователь хочет узнать, когда он посещает зал. Не указаны конкретные даты или время.",
+        "key_points": [
+          "Запрос о времени посещения зала",
+          "Нет конкретных данных о времени или дате"
+        ],
+        "todos": [],
+        "tags": [
+          "#спорт",
+          "#расписание"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T17:39:39.642Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Deploy, email, and Jim1900 tasks",
+        "summary": "The user needs to deploy on Railway, write a cold email to an investor, and remember something related to Jim1900.",
+        "key_points": [
+          "Deploy on Railway",
+          "Write a cold email to an investor",
+          "Follow up on Jim1900"
+        ],
+        "todos": [
+          {
+            "id": "25c8f002-d587-4d87-9b27-6b00792e10ab",
+            "task": "Deploy project on Railway",
+            "priority": "high",
+            "done": false,
+            "date": "2026-06-11",
+            "duration": 30
+          },
+          {
+            "id": "15dd8e0c-2029-4e90-8e05-c38a9f5c0e14",
+            "task": "Write a cold email to an investor",
+            "priority": "high",
+            "done": false,
+            "date": "2026-06-11",
+            "duration": 30
+          },
+          {
+            "id": "c4552731-aa2c-4792-9fde-05a3b9428bfc",
+            "task": "Follow up on Jim1900",
+            "priority": "medium",
+            "done": false,
+            "duration": 30
+          }
+        ],
+        "tags": [
+          "#deploy",
+          "#email",
+          "#investor",
+          "#Jim1900"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T17:40:53.057Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Планы на завтра с расписанием",
+        "summary": "Пользователь описал расписание на завтра, начиная с утренней зарядки и заканчивая вечерним занятием на гитаре. Включены задачи, встречи и активности с указанием времени.",
+        "key_points": [
+          "Утренняя зарядка в 8:00",
+          "Запись фичера для бота в 10:00",
+          "Обед в 12:00",
+          "Онлайн-встреча по UMIO в 14:00",
+          "Работа на DreamShift в 16:00",
+          "Вождение в Sigma в 18:00",
+          "Занятие на гитаре в 20:00"
+        ],
+        "todos": [
+          {
+            "id": "b1a00a5c-bb5f-4cb8-8d9a-aec691d7e050",
+            "task": "Утренняя зарядка",
+            "priority": "medium",
+            "done": false,
+            "time": "08:00",
+            "date": "2026-06-12",
+            "duration": 30
+          },
+          {
+            "id": "efa846f3-ad4b-429e-a536-2f3481fbf3aa",
+            "task": "Записать фичер для бота",
+            "priority": "high",
+            "done": false,
+            "time": "10:00",
+            "date": "2026-06-12",
+            "duration": 60
+          },
+          {
+            "id": "ce637518-4fcb-4960-b9a8-b74cd6259415",
+            "task": "Обед",
+            "priority": "medium",
+            "done": false,
+            "time": "12:00",
+            "date": "2026-06-12",
+            "duration": 60
+          },
+          {
+            "id": "e712a4a1-dc31-40ab-b9bd-0b63f63c9d7b",
+            "task": "Онлайн-встреча по UMIO",
+            "priority": "medium",
+            "done": false,
+            "time": "14:00",
+            "date": "2026-06-12",
+            "duration": 60
+          },
+          {
+            "id": "f05b8b82-522c-4065-b51f-5ebfb5466e8f",
+            "task": "Работа на DreamShift",
+            "priority": "medium",
+            "done": false,
+            "time": "16:00",
+            "date": "2026-06-12",
+            "duration": 120
+          },
+          {
+            "id": "d41c39b3-bbd0-40c8-8641-a184e76766cb",
+            "task": "Вождение в Sigma",
+            "priority": "medium",
+            "done": false,
+            "time": "18:00",
+            "date": "2026-06-12",
+            "duration": 60,
+            "location": "Sigma"
+          },
+          {
+            "id": "925aea5b-c402-4208-91e1-ebca41ee97ce",
+            "task": "Занятие на гитаре",
+            "priority": "medium",
+            "done": false,
+            "time": "20:00",
+            "date": "2026-06-12",
+            "duration": 60
+          },
+          {
+            "id": "390cbeca-f357-43eb-9966-99b3676c8d45",
+            "task": "Лечь спать",
+            "priority": "medium",
+            "done": false,
+            "time": "23:00",
+            "date": "2026-06-12",
+            "duration": 480
+          }
+        ],
+        "tags": [
+          "#планы",
+          "#расписание",
+          "#встречи",
+          "#работа",
+          "#хобби"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T17:41:35.929Z"
+      },
+      {
+        "chatId": 863340643,
+        "userId": 863340643,
+        "title": "Reschedule meeting at СНХ",
+        "summary": "The user wants to reschedule a meeting at СНХ to 17:00.",
+        "key_points": [
+          "Reschedule meeting",
+          "New time is 17:00"
+        ],
+        "todos": [
+          {
+            "id": "5862e5f4-eab0-4ce1-9bc0-981a25c73b59",
+            "task": "Reschedule meeting at СНХ",
+            "priority": "medium",
+            "done": false,
+            "time": "17:00",
+            "duration": 30,
+            "location": "СНХ"
+          }
+        ],
+        "tags": [
+          "#meeting",
+          "#reschedule"
+        ],
+        "language": "ru",
+        "createdAt": "2026-06-11T17:42:35.301Z"
+      }
+    ]
   },
-  "863340643": {
-    "chatId": 863340643,
-    "userId": 863340643,
-    "title": "Visit Starbucks in Mega Silkway",
-    "summary": "The user plans to visit Starbucks located in Mega Silkway, Astana. No specific time was mentioned.",
-    "key_points": [
-      "Visit Starbucks",
-      "Location: Mega Silkway, Astana"
-    ],
-    "todos": [
-      {
-        "id": "8fddf58d-cb8a-4a5c-ba28-7e39a1d04eb1",
-        "task": "Visit Starbucks in Mega Silkway",
-        "priority": "medium",
-        "done": false,
-        "duration": 30,
-        "location": "Mega Silkway, Astana"
-      }
-    ],
-    "tags": [
-      "#Starbucks",
-      "#Astana",
-      "#MegaSilkway"
-    ],
-    "language": "ru",
-    "createdAt": "2026-06-10T06:17:10.218Z"
+  "latestByChatId": {
+    "728554297": {
+      "chatId": 728554297,
+      "userId": 728554297,
+      "title": "Планы на вечер с Бекой",
+      "summary": "Пользователь планирует играть в волейбол или баскетбол ближе к ночи и ждет Беку.",
+      "key_points": [
+        "Игры в волейбол или баскетбол",
+        "Ожидание Беки"
+      ],
+      "todos": [
+        {
+          "id": "e6d09f85-f647-4fe4-8bda-e3a2e293f4c6",
+          "task": "Играть в волейбол или баскетбол",
+          "priority": "medium",
+          "done": false,
+          "duration": 60
+        }
+      ],
+      "tags": [
+        "#спорт",
+        "#вечер",
+        "#планы"
+      ],
+      "language": "ru",
+      "createdAt": "2026-06-06T17:48:01.100Z"
+    },
+    "863340643": {
+      "chatId": 863340643,
+      "userId": 863340643,
+      "title": "Reschedule meeting at СНХ",
+      "summary": "The user wants to reschedule a meeting at СНХ to 17:00.",
+      "key_points": [
+        "Reschedule meeting",
+        "New time is 17:00"
+      ],
+      "todos": [
+        {
+          "id": "5862e5f4-eab0-4ce1-9bc0-981a25c73b59",
+          "task": "Reschedule meeting at СНХ",
+          "priority": "medium",
+          "done": false,
+          "time": "17:00",
+          "duration": 30,
+          "location": "СНХ"
+        }
+      ],
+      "tags": [
+        "#meeting",
+        "#reschedule"
+      ],
+      "language": "ru",
+      "createdAt": "2026-06-11T17:42:35.301Z"
+    }
   }
 }

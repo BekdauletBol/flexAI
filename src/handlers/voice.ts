@@ -1,17 +1,20 @@
-import { Context, InputFile, InlineKeyboard } from 'grammy';
+import { Context, InputFile } from 'grammy';
 import { config } from '../config.js';
 import { transcribeAudio } from '../services/whisper.js';
 import { analyzeTranscript } from '../services/analysis.js';
-import { generatePdf } from '../services/pdf.js';
-import { generateChart } from '../services/chart.js';
 import { scheduleReminders } from '../services/scheduler.js';
-import { savePlan, getPlanForWebApp } from '../services/planStore.js';
+import { savePlan, getConflicts } from '../services/planStore.js';
 import { getUserConfig } from '../services/userConfig.js';
 import { searchPlace, getWeatherForecast, getDirections, generateLocationAdvice } from '../services/location.js';
+import { savePending } from '../services/pendingStore.js';
+import { buildConflictMessage, getConflictKeyboard } from '../services/messages.js';
+import { startDeliveryFlow } from '../services/delivery.js';
 import fs from 'fs';
 import path from 'path';
 import https from 'https';
 import http from 'http';
+
+const SEP = '———————————————';
 
 async function downloadFile(url: string, dest: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -30,19 +33,17 @@ async function downloadFile(url: string, dest: string): Promise<void> {
   });
 }
 
-function fileName(): string {
-  const d = new Date(), p = (n: number) => n.toString().padStart(2, '0');
-  return `note_${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}.pdf`;
-}
+
 
 export async function handleVoice(ctx: Context) {
   const userId = ctx.from?.id;
   const username = ctx.from?.username || ctx.from?.first_name || '?';
   if (!ctx.message?.voice) return;
   if (!userId) return;
-  if (config.allowedUserId && userId !== config.allowedUserId) { await ctx.reply('❌ Access denied.'); return; }
+  if (config.allowedUserId && userId !== config.allowedUserId) { await ctx.reply('Access denied.'); return; }
 
-  const statusMsg = await ctx.reply('🎙 Transcribing...');
+  const recordedAt = new Date();
+  const statusMsg = await ctx.reply('Transcribing...');
   let tempFile = '', transcript = '';
 
   try {
@@ -56,182 +57,96 @@ export async function handleVoice(ctx: Context) {
 
     // 2. Transcribe
     transcript = await transcribeAudio(tempFile);
-    if (!transcript?.trim()) { await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '❌ Could not recognize speech.'); return; }
-
-    // 3. Analyze transcript with AI
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '🧠 Analyzing...');
-    let analysis;
-    try { analysis = await analyzeTranscript(transcript); }
-    catch (e) {
-      console.error('[Voice] Analysis failed:', e);
-      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, `❌ Analysis failed.\n\n${transcript}`);
+    if (!transcript?.trim()) {
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Could not recognize speech.');
       return;
     }
 
-    // 4. Persist plan in PlanStore
-    if (ctx.chat) {
-      savePlan(ctx.chat.id, userId, analysis);
+    // 3. Analyze
+    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Analyzing...');
+    let analysis;
+    try {
+      analysis = await analyzeTranscript(transcript);
+    } catch (e) {
+      console.error('[Voice] Analysis failed:', e);
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, `Analysis failed.\n\n${transcript}`);
+      return;
     }
 
-    // 5. Schedule reminders
-    const timedTasks = analysis.todos.filter(t => t.time);
-    if (timedTasks.length > 0 && ctx.chat) {
-      scheduleReminders(ctx.chat.id, userId, analysis.todos, analysis.language);
-    }
-
-    // 6. Check Location Assistant
+    // Location Assistant
     let locationAdvice = '';
     if (analysis.location_query) {
-      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '📍 Checking location details...');
-      
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Checking location...');
       const userSettings = getUserConfig(userId);
       const hasCoords = userSettings.lat !== undefined && userSettings.lng !== undefined;
       const targetTime = analysis.visit_datetime || new Date().toISOString();
-
       try {
         const placePromise = searchPlace(analysis.location_query);
-        const weatherPromise = hasCoords 
-          ? getWeatherForecast(userSettings.lat!, userSettings.lng!, targetTime, analysis.language)
-          : Promise.resolve(null);
-        const directionsPromise = hasCoords
-          ? getDirections(userSettings.lat!, userSettings.lng!, analysis.location_query)
-          : Promise.resolve(null);
-
+        const weatherPromise = hasCoords ? getWeatherForecast(userSettings.lat!, userSettings.lng!, targetTime, analysis.language) : Promise.resolve(null);
+        const directionsPromise = hasCoords ? getDirections(userSettings.lat!, userSettings.lng!, analysis.location_query) : Promise.resolve(null);
         const [place, weather, directions] = await Promise.all([placePromise, weatherPromise, directionsPromise]);
-
-        locationAdvice = await generateLocationAdvice(
-          analysis.location_query,
-          targetTime,
-          place,
-          weather,
-          directions,
-          analysis.language
-        );
-
-        if (!hasCoords) {
-          const coordTip = analysis.language === 'ru' 
-            ? '\n\n💡 *Подсказка:* Чтобы бот мог построить маршрут и показать погоду, отправьте свою геолокацию с помощью команды /setlocation.'
-            : analysis.language === 'kk'
-            ? '\n\n💡 *Кеңес:* Маршрут құру және ауа райын білу үшін /setlocation командасы арқылы геолокацияңызды жіберіңіз.'
-            : '\n\n💡 *Tip:* To get route directions and weather forecast, send your location coordinates using the /setlocation command.';
-          locationAdvice += coordTip;
-        }
+        locationAdvice = await generateLocationAdvice(analysis.location_query, targetTime, place, weather, directions, analysis.language);
       } catch (err) {
         console.error('[Voice] Location assistant error:', err);
       }
     }
 
-    // 7. Generate Timeline & Priority Chart
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '📊 Generating timeline graph...');
-    let chartBuf: Buffer | null = null;
-    try {
-      chartBuf = await generateChart(analysis);
-    } catch (e) {
-      console.error('[Voice] Chart generation failed:', e);
+    // Conflict detection
+    const conflicts = ctx.from ? getConflicts(userId, analysis.todos) : [];
+
+    // Prepare pending note state
+    const pendingData = {
+      userId,
+      chatId: ctx.chat!.id,
+      analysis,
+      conflicts,
+      phase: conflicts.length > 0 ? 'conflict' as const : 'reminder' as const,
+      resolvedTodos: analysis.todos,
+      reminderIndex: 0
+    };
+    
+    const pendingId = savePending(pendingData);
+
+    // If conflict detected, STOP flow and show buttons
+    if (conflicts.length > 0) {
+      const conflictMsg = buildConflictMessage(conflicts, analysis.language);
+      const keyboard = getConflictKeyboard(pendingId, analysis.language);
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, conflictMsg, { reply_markup: keyboard });
+      return; 
     }
 
-    // 8. Generate PDF
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '📄 Creating PDF...');
-    const fn = fileName();
-    let pdfBuf: Buffer;
-    try { 
-      pdfBuf = await generatePdf(analysis); 
-    } catch (e) {
-      console.error('[Voice] PDF generation failed, falling back to text:', e);
-      const txt = `# ${analysis.title}\n\n${analysis.summary}\n\n${analysis.key_points.map(p => `- ${p}`).join('\n')}`;
-      await ctx.replyWithDocument(new InputFile(Buffer.from(txt, 'utf-8'), fn.replace('.pdf', '.txt')));
-      await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); 
-      return;
-    }
-
-    // 9. Send results
-    // Send chart if generated
-    if (chartBuf) {
-      const chartCaption = analysis.language === 'ru' ? '📊 График задач и приоритеты' : analysis.language === 'kk' ? '📊 Тапсырмалар графигі' : '📊 Task Timeline & Priorities';
-      await ctx.replyWithPhoto(new InputFile(chartBuf, 'chart.png'), { caption: chartCaption });
-    }
-
-    // Send PDF note
-    await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: `📎 ${analysis.title}` });
-
-    // Send Location Advice if generated
-    if (locationAdvice) {
-      const locationTitle = analysis.language === 'ru' ? '📍 *Ассистент по локации*' : analysis.language === 'kk' ? '📍 *Локация ассистенті*' : '📍 *Location Assistant*';
-      await ctx.reply(`${locationTitle}\n\n${locationAdvice}`, { parse_mode: 'Markdown' });
-    }
-
-    // Prepare Mini App URL
-    let webAppKeyboard: InlineKeyboard | undefined;
-    if (config.webappUrl && ctx.chat) {
-      const planData = getPlanForWebApp(ctx.chat.id);
-      if (planData) {
-        const base64 = Buffer.from(JSON.stringify(planData), 'utf-8').toString('base64');
-        const fullUrl = `${config.webappUrl}#${base64}`;
-        const btnLabel = analysis.language === 'ru' ? '📅 Открыть план в Mini App' : analysis.language === 'kk' ? '📅 Жоспарды Mini App-та ашу' : '📅 Open Plan in Mini App';
-        webAppKeyboard = new InlineKeyboard().webApp(btnLabel, fullUrl);
-      }
-    }
-
-    // Prepare chat summary text
-    const todoLines = analysis.todos.length > 0
-      ? analysis.todos.map(t => {
-          const dot = t.priority === 'high' ? '🔴' : t.priority === 'medium' ? '🟡' : '⚪';
-          const time = t.time ? ` ⏰${t.time}` : '';
-          return `${t.done ? '☑' : '☐'} ${dot} ${t.task}${time}`;
-        }).join('\n')
-      : '—';
-
-    const reminderNote = timedTasks.length > 0
-      ? (analysis.language === 'ru' 
-         ? `\n\n⏰ *Установлено ${timedTasks.length} напоминаний* — сообщу за 30 мин до начала!` 
-         : analysis.language === 'kk'
-         ? `\n\n⏰ *${timedTasks.length} еске салғыш орнатылды* — тапсырмаға 30 мин қалғанда хабарлаймын!`
-         : `\n\n⏰ *${timedTasks.length} reminder(s) set* — I'll notify you 30 min before each task!`)
-      : '';
-
-    const summaryTitle = analysis.language === 'ru' ? '📌 *Сводка плана*' : analysis.language === 'kk' ? '📌 *Жоспар жиынтығы*' : '📌 *Plan Summary*';
-    const tasksTitle = analysis.language === 'ru' ? '✅ *Задачи:*' : analysis.language === 'kk' ? '✅ *Тапсырмалар:*' : '✅ *Tasks:*';
-
-    await ctx.reply(
-      `${summaryTitle}\n\n*${analysis.title}*\n${analysis.summary}\n\n${tasksTitle}\n${todoLines}\n\n🏷 ${analysis.tags.join(', ') || '—'}${reminderNote}`,
-      { parse_mode: 'Markdown', reply_markup: webAppKeyboard }
-    );
-
-    // 10. Motivation Assistant
-    const taskCount = analysis.todos.length;
-    if (taskCount > 0) {
-      let photoPath = '';
-      let caption = '';
-
-      if (taskCount <= 2) {
-        photoPath = path.resolve(process.cwd(), 'assets/dump.png');
-        caption = analysis.language === 'ru' ? 'Yooo, почему ты не занят? 🤨' 
-                : analysis.language === 'kk' ? 'Yooo, неге бос отырсың? 🤨'
-                : 'Yooo, why are you not busy? 🤨';
-      } else {
-        photoPath = path.resolve(process.cwd(), 'assets/smart.png');
-        caption = analysis.language === 'ru' ? 'Ты босс! 😎 Столько дел!' 
-                : analysis.language === 'kk' ? 'Сен бастықсың! 😎 Қаншама шаруа!'
-                : 'You are a boss! 😎 So many tasks!';
-      }
-
-      if (fs.existsSync(photoPath)) {
-        await ctx.replyWithPhoto(new InputFile(photoPath), { caption });
-      }
-    }
-
+    // Delete status message if no conflict
     try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
-    console.log(`[Voice] ✅ processed voice note "${analysis.title}" [${analysis.language}]`);
+
+    // Save plan and schedule initial reminders
+    if (ctx.chat) {
+      savePlan(ctx.chat.id, userId, analysis);
+      const timedTasks = analysis.todos.filter(t => t.time);
+      if (timedTasks.length > 0) {
+        scheduleReminders(ctx.chat.id, userId, analysis.todos, analysis.language);
+      }
+    }
+
+    // If Location Advice exists, send it first
+    if (locationAdvice) {
+      const locationHeader = analysis.language === 'ru' ? 'ЛОКАЦИЯ\n\n' : analysis.language === 'kk' ? 'ЛОКАЦИЯ\n\n' : 'LOCATION\n\n';
+      await ctx.reply(locationHeader + locationAdvice);
+    }
+
+    // Delegate remaining output to delivery helper
+    await startDeliveryFlow(ctx, { ...pendingData, id: pendingId, createdAt: Date.now() });
+
+    console.log(`[Voice] Processed: "${analysis.title}" [${analysis.language}]`);
 
   } catch (error) {
     console.error('[Voice] Error:', error);
     const msg = error instanceof Error ? error.message : '';
     if (msg.includes('Failed to transcribe')) {
-      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '❌ Could not recognize speech.');
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Could not recognize speech.');
     } else if (transcript) {
-      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, `❌ Error during processing.\n\n${transcript.substring(0, 4000)}`);
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, `Error during processing.\n\n${transcript.substring(0, 4000)}`);
     } else {
-      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '❌ Something went wrong.');
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Something went wrong.');
     }
   } finally {
     if (tempFile && fs.existsSync(tempFile)) {

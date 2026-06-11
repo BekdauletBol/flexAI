@@ -22,7 +22,7 @@ Return ONLY a JSON object in this EXACT format:
   "summary": "2-3 sentence summary",
   "key_points": ["point 1", "point 2"],
   "todos": [
-    { "task": "Task description", "priority": "high", "done": false, "time": "15:00", "duration": 30, "location": "Place name or null" }
+    { "task": "Task description", "priority": "high", "done": false, "time": "15:00", "date": "2026-05-29", "duration": 30, "location": "Place name or null" }
   ],
   "tags": ["#tag1", "#tag2"],
   "raw_transcript": "original transcript unchanged",
@@ -38,6 +38,17 @@ TIME EXTRACTION:
 - Parse smartly: "3pm"="15:00", "half past 2"="14:30", "в 8 утра"="08:00".
 - "duration": estimated task duration in minutes (default 30).
 
+DATE EXTRACTION:
+- If the user mentions a date, extract as "date" in "YYYY-MM-DD" format using the current date context below.
+- "today" → today's date, "tomorrow" → tomorrow's date, "next Friday" → resolve to absolute ISO date.
+- If no date mentioned → set "date" to null.
+
+PRIORITY RULES (apply strictly):
+- "high": "срочно", "обязательно", "до [date]", "urgent", "asap", "must", "важно", "маңызды", "шұғыл"
+- "medium": "хочу", "планирую", "надо бы", "want to", "planning to", "need to", "керек"
+- "low": "возможно", "когда-нибудь", "maybe", "someday", "мүмкін", "бір кезде"
+- Default to "medium" when no clear signal.
+
 LOCATION EXTRACTION:
 - If user mentions visiting a specific place + time, set location_query (place name), visit_datetime (ISO), needs_location_check: true.
 - If task mentions a place name, set "location" on that todo item.
@@ -45,7 +56,6 @@ LOCATION EXTRACTION:
 
 Guidelines:
 - Be concise, action-oriented. Extract EVERY actionable item.
-- Priority: "high"=urgent, "medium"=standard, "low"=nice-to-have.
 - Generate #tags. "language": "ru","en","kk". Keep raw_transcript unchanged.
 - Return ONLY JSON.`;
 
@@ -91,6 +101,7 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
       priority: (['high','medium','low'].includes(t.priority) ? t.priority : 'medium') as any,
       done: t.done || false,
       time: t.time || undefined,
+      date: t.date || undefined,
       duration: t.duration || 30,
       location: t.location || undefined,
     }));

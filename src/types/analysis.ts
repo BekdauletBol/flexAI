@@ -3,7 +3,8 @@ export interface TodoItem {
   task: string;
   priority: 'high' | 'medium' | 'low';
   done: boolean;
-  time?: string;
+  time?: string;       // "HH:MM" 24h
+  date?: string;       // "YYYY-MM-DD" — absolute date for conflict detection
   duration?: number;   // minutes, default 30
   location?: string;
 }
