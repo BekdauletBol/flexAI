@@ -1,3 +1,4 @@
+import { logger } from '../logger.js';
 import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
 import { AnalysisResult, TodoItem } from '../types/analysis.js';
 
@@ -101,14 +102,14 @@ export async function generateChart(analysis: AnalysisResult): Promise<Buffer> {
       plugins: {
         title: {
           display: true,
-          text: `📋 ${analysis.title}`,
+          text: analysis.title,
           color: '#FFFFFF',
           font: { size: 18, weight: 'bold' as const },
           padding: { bottom: 20 },
         },
         subtitle: {
           display: true,
-          text: `🔴 High: ${high}  🟡 Medium: ${med}  ⚪ Low: ${low}  ✅ Done: ${done}`,
+          text: `High: ${high}  Medium: ${med}  Low: ${low}  Done: ${done}`,
           color: '#94A3B8',
           font: { size: 12 },
           padding: { bottom: 10 },
@@ -128,6 +129,6 @@ export async function generateChart(analysis: AnalysisResult): Promise<Buffer> {
   };
 
   const buffer = await chartCanvas.renderToBuffer(config);
-  console.log(`[Chart] Generated: ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+  logger.info(`[Chart] Generated: ${(buffer.byteLength / 1024).toFixed(0)} KB`);
   return buffer;
 }

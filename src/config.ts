@@ -13,19 +13,14 @@ export const config = {
   groqApiKey: process.env.GROQ_API_KEY || '',
   allowedUserId: process.env.ALLOWED_USER_ID ? parseInt(process.env.ALLOWED_USER_ID) : undefined,
 
-  // New: Location & Mini App
   googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || '',
-  openweatherApiKey: process.env.OPENWEATHER_API_KEY || '',
+  weatherApiKey: process.env.WEATHERAPI || process.env.OPENWEATHER_API_KEY || '',
+  weatherBaseUrl: process.env.WEATHER_BASE_URL || 'https://api.openweathermap.org/data/2.5/weather',
   webappUrl: process.env.WEBAPP_URL || '',
   port: parseInt(process.env.PORT || '3000'),
+  webhookDomain: process.env.WEBHOOK_DOMAIN || '',
 };
 
-if (!config.telegramToken) { console.error('❌ TELEGRAM_BOT_TOKEN required'); process.exit(1); }
-if (!config.openaiApiKey) { console.error('❌ OPENAI_API_KEY required'); process.exit(1); }
-if (!config.groqApiKey) { console.error('❌ GROQ_API_KEY required'); process.exit(1); }
-
-console.log(`[Config] GitHub Models: ${config.isGitHubModels} | Model: ${config.openaiModel}`);
-console.log(`[Config] Groq Whisper: enabled`);
-if (config.googleMapsApiKey) console.log(`[Config] Google Maps: enabled`);
-if (config.openweatherApiKey) console.log(`[Config] Weather: enabled`);
-if (config.webappUrl) console.log(`[Config] WebApp: ${config.webappUrl}`);
+if (!config.telegramToken) { console.error('TELEGRAM_BOT_TOKEN required'); process.exit(1); }
+if (!config.openaiApiKey) { console.error('OPENAI_API_KEY required'); process.exit(1); }
+if (!config.groqApiKey) { console.error('GROQ_API_KEY required'); process.exit(1); }

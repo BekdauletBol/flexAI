@@ -1,9 +1,12 @@
+import { logger } from '../logger.js';
 import { config } from '../config.js';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
   apiKey: config.openaiApiKey,
   ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
+  timeout: 15000,
+  maxRetries: 0,
 });
 
 interface PlaceResult {
@@ -62,56 +65,37 @@ export async function searchPlace(query: string): Promise<PlaceResult | null> {
       phone,
     };
   } catch (err) {
-    console.error('[Location] Places search failed:', err);
+    logger.error(err, '[Location] Places search failed:');
     return null;
   }
 }
 
 /** Get weather forecast for a specific datetime */
 export async function getWeatherForecast(lat: number, lng: number, datetime: string, lang: string = 'en'): Promise<WeatherResult | null> {
-  if (!config.openweatherApiKey) return null;
+  if (!config.weatherApiKey) return null;
   try {
-    const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lng}&appid=${config.openweatherApiKey}&units=metric&lang=${lang}`;
-    console.log(`[Location] Fetching weather from ${url}`);
+    const url = `${config.weatherBaseUrl}?lat=${lat}&lon=${lng}&appid=${config.weatherApiKey}&units=metric&lang=${lang}`;
+    logger.info(`[Location] Fetching weather from ${url}`);
     const res = await fetch(url);
     const data = await res.json() as any;
 
-    if (data.cod !== '200') {
-      console.error('[Location] Weather API error:', data.message);
+    if (data.cod !== 200) {
+      logger.error('[Location] Weather API error: %s', data.message);
       return null;
     }
 
-    const targetTime = new Date(datetime).getTime();
-    if (isNaN(targetTime)) {
-      console.error('[Location] Invalid datetime for weather:', datetime);
-      return null;
-    }
-
-    let closest = data.list?.[0];
-    let minDiff = Infinity;
-
-    for (const item of data.list || []) {
-      const diff = Math.abs(new Date(item.dt_txt).getTime() - targetTime);
-      if (diff < minDiff) { minDiff = diff; closest = item; }
-    }
-
-    if (!closest) {
-      console.warn('[Location] No weather forecast found for', datetime);
-      return null;
-    }
-
-    console.log(`[Location] Found weather for ${datetime}: ${closest.main.temp}°C, ${closest.weather[0]?.description}`);
+    logger.info(`[Location] Weather: ${data.main.temp}°C, ${data.weather[0]?.description}`);
 
     return {
-      temp: Math.round(closest.main.temp),
-      feels_like: Math.round(closest.main.feels_like),
-      description: closest.weather[0]?.description || '',
-      wind_speed: closest.wind?.speed || 0,
-      humidity: closest.main.humidity,
-      icon: closest.weather[0]?.icon || '',
+      temp: Math.round(data.main.temp),
+      feels_like: Math.round(data.main.feels_like),
+      description: data.weather[0]?.description || '',
+      wind_speed: data.wind?.speed || 0,
+      humidity: data.main.humidity,
+      icon: data.weather[0]?.icon || '',
     };
   } catch (err) {
-    console.error('[Location] Weather fetch failed:', err);
+    logger.error(err, '[Location] Weather fetch failed:');
     return null;
   }
 }
@@ -122,19 +106,19 @@ export async function getDirections(originLat: number, originLng: number, destQu
   try {
     const origin = `${originLat},${originLng}`;
     const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${encodeURIComponent(destQuery)}&mode=driving&key=${config.googleMapsApiKey}`;
-    console.log(`[Location] Fetching directions: ${origin} -> ${destQuery}`);
+    logger.info(`[Location] Fetching directions: ${origin} -> ${destQuery}`);
     const res = await fetch(url);
     const data = await res.json() as any;
     
     if (data.status !== 'OK') {
-      console.error('[Location] Directions API error:', data.status, data.error_message);
+      logger.error('[Location] Directions API error:', data.status, data.error_message);
       return null;
     }
 
     const route = data.routes?.[0]?.legs?.[0];
     if (!route) return null;
 
-    console.log(`[Location] Directions found: ${route.distance.text}, ${route.duration.text}`);
+    logger.info(`[Location] Directions found: ${route.distance.text}, ${route.duration.text}`);
 
     return {
       duration: route.duration.text,
@@ -142,7 +126,7 @@ export async function getDirections(originLat: number, originLng: number, destQu
       summary: data.routes[0].summary || '',
     };
   } catch (err) {
-    console.error('[Location] Directions failed:', err);
+    logger.error(err, '[Location] Directions failed:');
     return null;
   }
 }
@@ -180,7 +164,7 @@ export async function generateLocationAdvice(
     });
     return res.choices[0]?.message?.content || '';
   } catch (err) {
-    console.error('[Location] Advice generation failed:', err);
+    logger.error(err, '[Location] Advice generation failed:');
     return '';
   }
 }
@@ -215,11 +199,11 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string> 
     const data = await res.json() as any;
     const city = data.city || data.locality || data.principalSubdivision;
     if (city) {
-      console.log(`[Location] Resolved via BigDataCloud: ${city}`);
+      logger.info(`[Location] Resolved via BigDataCloud: ${city}`);
       return city;
     }
   } catch (err) {
-    console.error('[Location] Fallback geocoding failed:', err);
+    logger.error(err, '[Location] Fallback geocoding failed:');
   }
 
   return 'My Location';
@@ -250,7 +234,7 @@ export async function geocodeCity(cityName: string): Promise<{ lat: number, lng:
       return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
     }
   } catch (err) {
-    console.error('[Location] OSM Geocode failed:', err);
+    logger.error(err, '[Location] OSM Geocode failed:');
   }
 
   return null;

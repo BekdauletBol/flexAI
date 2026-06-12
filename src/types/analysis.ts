@@ -3,7 +3,9 @@ export interface TodoItem {
   task: string;
   priority: 'high' | 'medium' | 'low';
   done: boolean;
-  time?: string;
+  time?: string;       // "HH:MM" for display
+  datetime?: string;   // ISO datetime "2026-07-15T15:00:00" for scheduling
+  date?: string;       // "2026-07-15" for grouping
   duration?: number;   // minutes, default 30
   location?: string;
 }
@@ -19,4 +21,5 @@ export interface AnalysisResult {
   location_query?: string;
   visit_datetime?: string;
   needs_location_check?: boolean;
+  user_city?: string;
 }

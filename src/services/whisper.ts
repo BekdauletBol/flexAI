@@ -1,3 +1,4 @@
+import { logger } from '../logger.js';
 import OpenAI from 'openai';
 import { config } from '../config.js';
 import fs from 'fs';
@@ -20,7 +21,7 @@ const groq = new OpenAI({
 export async function transcribeAudio(filePath: string): Promise<string> {
   try {
     const fileSize = fs.statSync(filePath).size;
-    console.log(`[Whisper] Transcribing audio (${(fileSize / 1024).toFixed(1)} KB) via Groq Whisper...`);
+    logger.info(`[Whisper] Transcribing audio (${(fileSize / 1024).toFixed(1)} KB) via Groq Whisper...`);
 
     const response = await groq.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
@@ -34,10 +35,10 @@ export async function transcribeAudio(filePath: string): Promise<string> {
       throw new Error('Empty transcription result');
     }
 
-    console.log(`[Whisper] Done (${transcript.length} chars): "${transcript.substring(0, 80)}..."`);
+    logger.info(`[Whisper] Done (${transcript.length} chars): "${transcript.substring(0, 80)}..."`);
     return transcript;
   } catch (error) {
-    console.error('[Whisper Service] Error:', error);
+    logger.error(error, '[Whisper Service] Error:');
     throw new Error('Failed to transcribe audio');
   }
 }

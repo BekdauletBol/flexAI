@@ -1,3 +1,4 @@
+import { logger } from '../logger.js';
 import OpenAI from 'openai';
 import { config } from '../config.js';
 import { TodoItem } from '../types/analysis.js';
@@ -5,6 +6,8 @@ import { TodoItem } from '../types/analysis.js';
 const openai = new OpenAI({
   apiKey: config.openaiApiKey,
   ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
+  timeout: 30000,
+  maxRetries: 0,
 });
 
 export async function generateFullReport(tasks: TodoItem[], language: 'ru' | 'en' | 'kk' | 'mixed'): Promise<string> {
@@ -48,7 +51,7 @@ ${taskList}
 
     return response.choices[0]?.message?.content || 'Failed to generate report.';
   } catch (error) {
-    console.error('[Reporter] AI error:', error);
-    return 'Error generating report with AI.';
+    logger.error(error, '[Reporter] AI error:');
+    return 'Error generating report.';
   }
 }

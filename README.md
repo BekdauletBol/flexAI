@@ -1,125 +1,67 @@
-# 🎙 Voice Bot — Телеграм-бот для голосовых заметок
+# Flex — Telegram Voice Notes Assistant
 
-Бот принимает голосовые сообщения, транскрибирует их, анализирует содержание и возвращает структурированный `.docx` файл.
+Voice-to-task bot with scheduling, reminders, conflict detection, multi-language support, and PDF reports.
 
-## Возможности
+## Features
 
-- 🎙 **Транскрипция** — распознавание речи через GPT-4o (русский, английский, казахский)
-- 🧠 **Анализ** — выделение ключевых моментов, задач и тегов
-- 📄 **DOCX** — генерация Word-документа со структурированными заметками
-- ✅ **TODO** — автоматическое выделение задач с приоритетами
-- 🏷 **Теги** — Obsidian-совместимые теги
+- Voice transcription (Groq Whisper) + AI analysis (GPT-4o)
+- Task extraction with priorities, dates, times, locations
+- Per-task reminder keyboard (5/10/15/30/60 min + custom)
+- Conflict detection (overlapping tasks)
+- PDF report generation
+- Multi-language: English, Russian, Kazakh
+- Auto-detected location (geocoding + weather)
+- SQLite persistence (no JSON corruption)
 
-## Структура документа
-
-| Раздел | Описание |
-|--------|----------|
-| 📋 Краткое содержание | 2-3 предложения о сути |
-| 🔑 Ключевые моменты | Список основных тезисов |
-| ✅ Задачи (TODO) | Таблица задач с приоритетами |
-| 🏷 Теги | Obsidian-стиль |
-| 📝 Полная транскрипция | Весь текст голосового |
-
-## Требования
-
-- **Node.js** 18+
-- **ffmpeg** (для конвертации аудио)
-- Telegram Bot Token ([@BotFather](https://t.me/BotFather))
-- OpenAI API Key или GitHub PAT (для GitHub Models)
-
-## Установка
-
-### 1. Клонирование и зависимости
+## Quick Start
 
 ```bash
-cd voice-bot
+cp .env.example .env   # fill in your tokens
 npm install
-```
-
-### 2. Установка ffmpeg (если не установлен)
-
-```bash
-# macOS
-brew install ffmpeg
-
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# Windows (scoop)
-scoop install ffmpeg
-```
-
-### 3. Настройка переменных окружения
-
-```bash
-cp .env.example .env
-```
-
-Заполни `.env`:
-
-```env
-TELEGRAM_BOT_TOKEN=твой_токен_от_botfather
-OPENAI_API_KEY=твой_ключ_openai_или_github_pat
-OPENAI_MODEL=gpt-4o
-ALLOWED_USER_ID=  # опционально: ID пользователя для ограничения доступа
-```
-
-> 💡 **GitHub Models:** Если используешь GitHub PAT (начинается с `ghp_`), бот автоматически переключится на `models.inference.ai.azure.com`.
-
-### 4. Запуск
-
-```bash
-# Режим разработки
 npm run dev
-
-# Production
-npm run build
-npm start
 ```
 
-## Использование
+## Docker
 
-1. Открой бота в Telegram
-2. Отправь `/start` для приветствия
-3. Запиши и отправь голосовое сообщение
-4. Получи:
-   - 📎 Word-документ со структурированными заметками
-   - 📝 Текстовую сводку в чат с задачами
-
-## Технический стек
-
-| Компонент | Технология |
-|-----------|-----------|
-| Runtime | Node.js + TypeScript |
-| Telegram | grammy |
-| AI/Транскрипция | OpenAI GPT-4o |
-| DOCX | docx |
-| Конвертация аудио | ffmpeg |
-
-## Структура проекта
-
-```
-voice-bot/
-├── src/
-│   ├── index.ts           # Точка входа бота
-│   ├── config.ts          # Конфигурация (.env)
-│   ├── handlers/
-│   │   └── voice.ts       # Обработчик голосовых сообщений
-│   ├── services/
-│   │   ├── whisper.ts     # Транскрипция (GPT-4o audio)
-│   │   ├── analysis.ts    # Анализ (GPT-4o JSON)
-│   │   └── docx.ts        # Генерация Word-документа
-│   └── types/
-│       └── analysis.ts    # TypeScript интерфейсы
-├── .env.example
-├── package.json
-├── tsconfig.json
-└── README.md
+```bash
+docker compose up -d --build
 ```
 
-## Обработка ошибок
+Starts on port 3000 with healthcheck, auto-restart, persistent volume.
 
-- ❌ Ошибка транскрипции → сообщение "Не удалось распознать"
-- ❌ Ошибка анализа → отправка сырой транскрипции
-- ❌ Ошибка DOCX → отправка .txt файла как fallback
-- Все ошибки логируются в консоль с таймстампами
+## Configuration
+
+| Var | Required | Description |
+|-----|----------|-------------|
+| TELEGRAM_BOT_TOKEN | yes | From @BotFather |
+| OPENAI_API_KEY | yes | OpenAI key or GitHub PAT (`ghp_...`) |
+| GROQ_API_KEY | yes | Groq Whisper (free at console.groq.com) |
+| WEBHOOK_DOMAIN | no | HTTPS URL for webhook mode (omit = long polling) |
+| GOOGLE_MAPS_API_KEY | no | Location/weather features |
+| OPENWEATHER_API_KEY | no | Weather forecast |
+| WEBAPP_URL | no | Telegram Mini App public URL |
+| LOG_LEVEL | no | `info` (default), `debug`, `trace` |
+
+## Production Checklist
+
+- Set `WEBHOOK_DOMAIN` to your HTTPS URL (required for Telegram webhook)
+- Use Docker with `docker compose up -d`
+- Monitor via healthcheck: `GET /health`
+- Logs via `docker compose logs -f`
+- DB volume persists across restarts
+
+## Commands
+
+`/start` — welcome message
+`/language` — switch language
+`/report` — full task report
+`/help` — usage info
+
+## Architecture
+
+```
+voice/audio -> Groq Whisper -> GPT-4o analysis -> tasks stored in SQLite
+                                                     -> PDF report
+                                                     -> reminders (30s interval)
+                                                     -> conflict check
+```

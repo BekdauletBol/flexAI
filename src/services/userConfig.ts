@@ -1,5 +1,5 @@
-import fs from 'fs';
-import path from 'path';
+import { logger } from '../logger.js';
+import * as db from './db.js';
 
 export interface UserSettings {
   city?: string;
@@ -9,44 +9,29 @@ export interface UserSettings {
   reminder_offset_minutes: number;
 }
 
-const CONFIG_PATH = path.resolve(process.cwd(), 'user_config.json');
-let configs: Record<string, UserSettings> = {};
-
-function load() {
-  try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      configs = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    }
-  } catch { configs = {}; }
-}
-
-function save() {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(configs, null, 2));
-}
-
-load();
-
 export function getUserConfig(userId: number): UserSettings {
-  return configs[String(userId)] || { reminder_offset_minutes: 30 };
+  const row = db.getUser(userId);
+  if (!row) return { reminder_offset_minutes: 30 };
+  return {
+    city: row.city,
+    lat: row.lat,
+    lng: row.lng,
+    language: row.language as 'ru' | 'en' | 'kk',
+    reminder_offset_minutes: row.reminder_offset_minutes,
+  };
 }
 
 export function setUserLanguage(userId: number, lang: 'ru' | 'en' | 'kk') {
-  const existing = getUserConfig(userId);
-  configs[String(userId)] = { ...existing, language: lang };
-  save();
-  console.log(`[UserConfig] Language set for ${userId}: ${lang}`);
+  db.upsertUser(userId, { language: lang });
+  logger.info(`[UserConfig] Language set for ${userId}: ${lang}`);
 }
 
 export function setUserLocation(userId: number, city: string, lat: number, lng: number) {
-  const existing = getUserConfig(userId);
-  configs[String(userId)] = { ...existing, city, lat, lng };
-  save();
-  console.log(`[UserConfig] Location set for ${userId}: ${city} (${lat}, ${lng})`);
+  db.upsertUser(userId, { city, lat, lng });
+  logger.info(`[UserConfig] Location set for ${userId}: ${city} (${lat}, ${lng})`);
 }
 
 export function setReminderOffset(userId: number, minutes: number) {
-  const existing = getUserConfig(userId);
-  configs[String(userId)] = { ...existing, reminder_offset_minutes: minutes };
-  save();
-  console.log(`[UserConfig] Reminder offset set for ${userId}: ${minutes} min`);
+  db.upsertUser(userId, { reminder_offset_minutes: minutes });
+  logger.info(`[UserConfig] Reminder offset set for ${userId}: ${minutes} min`);
 }

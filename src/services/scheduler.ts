@@ -1,3 +1,4 @@
+import { logger } from '../logger.js';
 import { Bot } from 'grammy';
 import { TodoItem } from '../types/analysis.js';
 import { getUserConfig } from './userConfig.js';
@@ -7,7 +8,7 @@ interface ScheduledReminder {
   chatId: number;
   taskId?: string;
   task: string;
-  timeStr: string;    // "15:00"
+  timeStr: string;    // "15:00" or "2026-07-15 15:00"
   triggerAt: number;   // Unix ms
   notified: boolean;
   language: string;
@@ -17,81 +18,83 @@ const reminders: ScheduledReminder[] = [];
 let bot: Bot | null = null;
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
-/** Initialize the scheduler with the bot instance. */
 export function initScheduler(botInstance: Bot) {
   bot = botInstance;
-  // Check every 30 seconds
   intervalId = setInterval(checkReminders, 30_000);
-  console.log('[Scheduler] Started — checking every 30s');
+  logger.info('[Scheduler] Started — checking every 30s');
 }
 
-/** Helper to parse "HH:MM" time string into trigger date */
-function getEventTimeToday(timeStr: string): Date | null {
-  const match = timeStr.match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return null;
-
-  const hours = parseInt(match[1]);
-  const minutes = parseInt(match[2]);
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-
-  const eventTime = new Date();
-  eventTime.setHours(hours, minutes, 0, 0);
-  return eventTime;
+/** Parse a todo's datetime into a Date object. Returns null on failure. */
+function getEventTime(todo: TodoItem): Date | null {
+  // Priority: datetime ISO > time HH:MM (today)
+  if (todo.datetime) {
+    const d = new Date(todo.datetime);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (todo.time) {
+    const match = todo.time.match(/^(\d{1,2}):(\d{2})$/);
+    if (match) {
+      const hours = parseInt(match[1]);
+      const minutes = parseInt(match[2]);
+      if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
+        const eventTime = new Date();
+        eventTime.setHours(hours, minutes, 0, 0);
+        return eventTime;
+      }
+    }
+  }
+  return null;
 }
 
-/** Schedule reminders for tasks that have a specific time. */
 export function scheduleReminders(chatId: number, userId: number, todos: TodoItem[], language: string) {
   const now = new Date();
   const userSettings = getUserConfig(userId);
   const offset = userSettings.reminder_offset_minutes || 30;
 
   for (const todo of todos) {
-    if (!todo.time) continue;
-
-    const eventTime = getEventTimeToday(todo.time);
+    const eventTime = getEventTime(todo);
     if (!eventTime) continue;
 
-    // If the event already passed today, skip
+    // If event already passed, skip
     if (eventTime.getTime() < now.getTime()) {
-      console.log(`[Scheduler] Skipped "${todo.task}" at ${todo.time} — already passed`);
+      logger.info(`[Scheduler] Skipped "${todo.task}" at ${todo.datetime || todo.time} — already passed`);
       continue;
     }
 
-    // Trigger offset minutes before
     const triggerAt = eventTime.getTime() - offset * 60 * 1000;
 
-    // If trigger time already passed but event hasn't, notify in 5 seconds
+    const displayTime = todo.datetime
+      ? `${todo.date || todo.datetime.split('T')[0]} ${todo.time || ''}`
+      : todo.time || '';
+
     const reminder: ScheduledReminder = {
       chatId,
       taskId: todo.id,
       task: todo.task,
-      timeStr: todo.time,
+      timeStr: displayTime,
       triggerAt: triggerAt < now.getTime() ? now.getTime() + 5000 : triggerAt,
       notified: false,
       language,
     };
 
-    // Remove any pre-existing reminder for this task ID
     const existingIndex = reminders.findIndex(r => r.taskId === todo.id);
     if (existingIndex !== -1) {
       reminders.splice(existingIndex, 1);
     }
 
     reminders.push(reminder);
-    const minsUntil = Math.round((reminder.triggerAt - now.getTime()) / 60000);
-    console.log(`[Scheduler] Reminder set: "${todo.task}" at ${todo.time} (offset ${offset}m) — notify in ${minsUntil} min`);
+    const timeUntil = Math.round((reminder.triggerAt - now.getTime()) / 60000);
+    const unit = timeUntil >= 1440 ? `${Math.round(timeUntil / 1440)}d` : `${timeUntil}min`;
+    logger.info(`[Scheduler] Reminder set: "${todo.task}" at ${displayTime} (offset ${offset}m) — notify in ${unit}`);
   }
 }
 
-/** Reschedule a single reminder (e.g. from the Mini App). */
 export function rescheduleReminder(chatId: number, taskId: string, task: string, newTime: string, language: string) {
   const now = new Date();
-  const eventTime = getEventTimeToday(newTime);
-  if (!eventTime) return;
+  const offset = 30;
+  const eventTime = new Date(newTime);
+  if (isNaN(eventTime.getTime())) return;
 
-  // Let's retrieve user settings to know the offset (we might not have userId, so we default to 30)
-  // Or we can find existing reminder to see if there's any details, but let's check config path or just default to 30
-  const offset = 30; 
   const triggerAt = eventTime.getTime() - offset * 60 * 1000;
 
   const reminder: ScheduledReminder = {
@@ -110,25 +113,19 @@ export function rescheduleReminder(chatId: number, taskId: string, task: string,
   }
 
   reminders.push(reminder);
-  console.log(`[Scheduler] Rescheduled reminder for "${task}" to ${newTime}`);
+  logger.info(`[Scheduler] Rescheduled reminder for "${task}" to ${newTime}`);
 }
 
-/** Update offsets of all pending reminders for a chat. */
 export function updateReminderOffsets(chatId: number, offsetMinutes: number) {
   const now = Date.now();
   for (const r of reminders) {
     if (r.chatId === chatId && !r.notified) {
-      const eventTime = getEventTimeToday(r.timeStr);
-      if (!eventTime) continue;
-
-      const triggerAt = eventTime.getTime() - offsetMinutes * 60 * 1000;
-      r.triggerAt = triggerAt < now ? now + 5000 : triggerAt;
-      console.log(`[Scheduler] Adjusted reminder offset for "${r.task}" to ${offsetMinutes}m (trigger in ${Math.round((r.triggerAt - now) / 60000)}m)`);
+      // Can't recompute without original event time
+      r.triggerAt = now + 5000;
     }
   }
 }
 
-/** Check and fire due reminders. */
 async function checkReminders() {
   if (!bot) return;
   const now = Date.now();
@@ -136,35 +133,33 @@ async function checkReminders() {
   for (const r of reminders) {
     if (r.notified || now < r.triggerAt) continue;
 
-    // Smart check: Skip reminder if the task is already marked done in planStore
     if (r.taskId) {
       const plan = getPlan(r.chatId);
       const todo = plan?.todos.find(t => t.id === r.taskId);
       if (todo?.done) {
         r.notified = true;
-        console.log(`[Scheduler] Task "${r.task}" is already completed. Skipping reminder.`);
+        logger.info(`[Scheduler] Task "${r.task}" is already completed. Skipping reminder.`);
         continue;
       }
     }
 
     r.notified = true;
-    const emoji = '⏰';
     const msgs: Record<string, string> = {
-      en: `${emoji} *Reminder!*\n\nYour task *"${r.task}"* is scheduled at *${r.timeStr}* — don't forget! 🚀`,
-      ru: `${emoji} *Напоминание!*\n\nЗадача *"${r.task}"* запланирована на *${r.timeStr}* — не забудь! 🚀`,
-      kk: `${emoji} *Еске салу!*\n\nТапсырма *"${r.task}"* сағат *${r.timeStr}* — ұмытпаңыз! 🚀`,
+      en: `Reminder\n\nYour task "${r.task}" is scheduled at ${r.timeStr}.`,
+      ru: `Напоминание\n\nЗадача "${r.task}" запланирована на ${r.timeStr}.`,
+      kk: `Еске салу\n\nТапсырма "${r.task}" сағат ${r.timeStr}.`,
     };
     const text = msgs[r.language] || msgs.en;
 
     try {
       await bot.api.sendMessage(r.chatId, text, { parse_mode: 'Markdown' });
-      console.log(`[Scheduler] ✅ Sent reminder: "${r.task}" at ${r.timeStr}`);
+      logger.info(`[Scheduler] Sent reminder: "${r.task}" at ${r.timeStr}`);
     } catch (err) {
-      console.error(`[Scheduler] Failed to send reminder:`, err);
+      logger.error(err, '[Scheduler] Failed to send reminder');
     }
   }
 
-  // Cleanup old reminders
+  // Cleanup old notifications (older than 1 min)
   const cutoff = now - 60_000;
   for (let i = reminders.length - 1; i >= 0; i--) {
     if (reminders[i].notified && reminders[i].triggerAt < cutoff) {

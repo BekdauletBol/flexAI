@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - bot_data:/app
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+volumes:
+  bot_data:

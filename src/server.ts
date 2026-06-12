@@ -3,13 +3,34 @@ import path from 'path';
 import { getPlan, completeTask, rescheduleTask } from './services/planStore.js';
 import { setReminderOffset, getUserConfig } from './services/userConfig.js';
 import { rescheduleReminder, updateReminderOffsets } from './services/scheduler.js';
+import { logger } from './logger.js';
 
 export function createServer() {
   const app = express();
 
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
 
-  // Serve static assets and webapp
+  // Simple rate limiter
+  const rateLimit = new Map<string, { count: number; resetAt: number }>();
+  const RATE_LIMIT = 100;
+  const RATE_WINDOW = 60_000;
+
+  app.use((req, res, next) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    let entry = rateLimit.get(ip);
+    if (!entry || now > entry.resetAt) {
+      entry = { count: 0, resetAt: now + RATE_WINDOW };
+      rateLimit.set(ip, entry);
+    }
+    entry.count++;
+    if (entry.count > RATE_LIMIT) {
+      res.status(429).json({ error: 'Too many requests' });
+      return;
+    }
+    next();
+  });
+
   app.use(express.static(path.resolve('public')));
   app.use('/assets', express.static(path.resolve('assets')));
 
@@ -17,12 +38,10 @@ export function createServer() {
     res.sendFile(path.resolve('public/webapp.html'));
   });
 
-  // Health check
   app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // Complete task
   app.post('/api/todo/complete', (req, res) => {
     const { chatId, taskId, done } = req.body;
     if (!chatId || !taskId) {
@@ -36,11 +55,10 @@ export function createServer() {
       return;
     }
 
-    console.log(`[API] Task "${todo.task}" completed: ${todo.done}`);
+    logger.info({ chatId, taskId, done }, 'Task completed via API');
     res.json({ success: true, todo });
   });
 
-  // Reschedule task
   app.post('/api/todo/reschedule', (req, res) => {
     const { chatId, taskId, newTime } = req.body;
     if (!chatId || !taskId || !newTime) {
@@ -54,16 +72,14 @@ export function createServer() {
       return;
     }
 
-    // Update scheduler
     const plan = getPlan(Number(chatId));
     const language = plan?.language || 'en';
     rescheduleReminder(Number(chatId), taskId, todo.task, newTime, language);
 
-    console.log(`[API] Task "${todo.task}" rescheduled to ${newTime}`);
+    logger.info({ chatId, taskId, newTime }, 'Task rescheduled via API');
     res.json({ success: true, todo });
   });
 
-  // Change reminder offset setting
   app.post('/api/todo/reminder', (req, res) => {
     const { chatId, userId, offsetMinutes } = req.body;
     if (!chatId || !userId || typeof offsetMinutes !== 'number') {
@@ -74,7 +90,7 @@ export function createServer() {
     setReminderOffset(Number(userId), offsetMinutes);
     updateReminderOffsets(Number(chatId), offsetMinutes);
 
-    console.log(`[API] Reminder offset for user ${userId} set to ${offsetMinutes} min`);
+    logger.info({ userId, offsetMinutes }, 'Reminder offset updated via API');
     res.json({ success: true, offsetMinutes });
   });
 

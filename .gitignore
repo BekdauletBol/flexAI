@@ -4,3 +4,8 @@ temp/
 .env
 *.ogg
 *.wav
+data.db
+data.db-shm
+data.db-wal
+day_plan.json
+user_config.json
