@@ -482,7 +482,7 @@ bot.on('message:text', async (ctx) => {
       clearUserFlowState(userId);
       pending.reminderIndex++;
       
-      await sendResultsAndReminderButtons(ctx, pending);
+      await advanceReminderLoop(ctx, pending);
       return;
     } else {
       const lang = getLang(userId);
