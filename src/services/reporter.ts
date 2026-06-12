@@ -32,7 +32,7 @@ The report should include:
 2. Key focus areas based on priorities.
 3. A motivational closing statement.
 
-Keep it professional yet encouraging. Use emojis.
+Keep it professional, concise and encouraging. No emojis.
 
 TASKS:
 ${taskList}

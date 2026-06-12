@@ -25,11 +25,11 @@ const bot = new Bot(config.telegramToken);
 
 const i18n = {
   ru: {
-    start: 'flex — voice notes assistant\n\nSend a voice message. I will transcribe it, extract tasks, and generate a structured report.\n\nCommands:\n/report — view all current tasks\n/language — change language\n\nLocation is detected automatically from your messages.',
-    lang_set: 'Language set to Russian.',
-    ping: 'pong',
-    wait_report: 'Analyzing tasks...',
-    no_tasks: 'No tasks yet. Send a voice message.',
+    start: 'flex — голосовой ассистент для заметок\n\nОтправь голосовое сообщение. Я расшифрую, извлеку задачи и сформирую отчёт.\n\nКоманды:\n/report — все текущие задачи\n/language — сменить язык\n\nМестоположение определяется автоматически.',
+    lang_set: 'Язык установлен: русский.',
+    ping: 'работаю',
+    wait_report: 'Анализирую задачи...',
+    no_tasks: 'Пока нет задач. Отправь голосовое сообщение.',
   },
   en: {
     start: 'flex — voice notes assistant\n\nSend a voice message. I will transcribe it, extract tasks, and generate a structured report.\n\nCommands:\n/report — view all current tasks\n/language — change language\n\nLocation is detected automatically from your messages.',
@@ -39,11 +39,11 @@ const i18n = {
     no_tasks: 'No tasks yet. Send a voice message.',
   },
   kk: {
-    start: 'flex — voice notes assistant\n\nSend a voice message. I will transcribe it, extract tasks, and generate a structured report.\n\nCommands:\n/report — view all current tasks\n/language — change language\n\nLocation is detected automatically from your messages.',
-    lang_set: 'Language set to Kazakh.',
-    ping: 'pong',
-    wait_report: 'Analyzing tasks...',
-    no_tasks: 'No tasks yet. Send a voice message.',
+    start: 'flex — дауыстық жазбалар ассистенті\n\nДауыстық хабарлама жіберіңіз. Мен транскрипциялап, тапсырмаларды бөліп алып, есеп дайындаймын.\n\nКомандалар:\n/report — барлық тапсырмалар\n/language — тілді өзгерту\n\nОрналасқан жері автоматты түрде анықталады.',
+    lang_set: 'Тіл орнатылды: қазақша.',
+    ping: 'жұмыс істеймін',
+    wait_report: 'Тапсырмаларды талдау...',
+    no_tasks: 'Әлі тапсырмалар жоқ. Дауыстық хабарлама жіберіңіз.',
   }
 };
 
@@ -88,7 +88,7 @@ bot.command('report', async (ctx) => {
 
   try {
     const report = await generateFullReport(tasks, lang);
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, { parse_mode: 'Markdown' });
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report);
   } catch (err) {
     logger.error(err, 'Report generation failed');
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 'Error.');
@@ -97,38 +97,26 @@ bot.command('report', async (ctx) => {
 
 bot.command('start', async (ctx) => {
   const settings = getUserConfig(ctx.from!.id);
-  const lang = settings.language || 'en';
-  await ctx.reply(i18n[lang].start);
+  const lang = settings.language || 'ru';
+  await ctx.reply(i18n[lang]?.start || i18n.ru.start);
 });
 
 bot.command('help', async (ctx) => {
   const settings = getUserConfig(ctx.from!.id);
-  const lang = settings.language || 'en';
-  await ctx.reply(i18n[lang].start);
+  const lang = settings.language || 'ru';
+  if (lang === 'ru') {
+    await ctx.reply('flex — голосовой ассистент\n\nКак использовать:\n— Отправь голосовое сообщение с задачами\n— Я расшифрую, извлеку задачи и предложу настроить напоминания\n— В конце пришлю PDF-отчёт\n\nКоманды:\n/report — все задачи\n/language — сменить язык\n/ping — проверка');
+  } else if (lang === 'kk') {
+    await ctx.reply('flex — дауыстық ассистент\n\nҚалай қолдану керек:\n— Тапсырмаларыңызбен дауыстық хабарлама жіберіңіз\n— Мен транскрипциялап, тапсырмаларды бөліп алып, еске салғыштарды ұсынамын\n— Соңында PDF есеп жіберемін\n\nКомандалар:\n/report — барлық тапсырмалар\n/language — тілді өзгерту\n/ping — тексеру');
+  } else {
+    await ctx.reply('flex — voice assistant\n\nHow to use:\n— Send a voice message with your tasks\n— I will transcribe, extract tasks, and suggest reminders\n— I will send a PDF report at the end\n\nCommands:\n/report — all tasks\n/language — change language\n/ping — check');
+  }
 });
 
 bot.on('message:voice', handleVoice);
 bot.on('message:audio', (ctx) => ctx.reply('Send a voice message (hold mic), not an audio file.'));
 
 // Debug: /test <text> — run text through analysis without voice
-bot.command('test', async (ctx) => {
-  const text = ctx.match;
-  if (!text) { await ctx.reply('Usage: /test <text to analyze>'); return; }
-  const userId = ctx.from!.id;
-  const msg = await ctx.reply('Analyzing...');
-  try {
-    const analysis = await analyzeTranscript(text);
-    if (ctx.chat) savePlan(ctx.chat.id, userId, analysis);
-    const lines = analysis.todos.map(t => `\u2014 ${t.task} \u00B7 ${t.priority}${t.time ? ' \u00B7 ' + t.time : ''}${t.date ? ' \u00B7 ' + t.date : ''}`).join('\n');
-    await ctx.api.editMessageText(ctx.chat!.id, msg.message_id,
-      `${analysis.title}\n\n${analysis.summary}\n\nTASKS\n${lines || '\u2014'}\n\nLANG: ${analysis.language}\nTAGS: ${analysis.tags.join(', ') || '\u2014'}`
-    );
-  } catch (err) {
-    logger.error(err, '[Test] Error');
-    await ctx.api.editMessageText(ctx.chat!.id, msg.message_id, 'Error.');
-  }
-});
-
 // Handle reminder inline keyboard callbacks
 bot.callbackQuery(/^remind_(\d+)_(-?\d+)$/, async (ctx) => {
   if (!ctx.chat) return;
@@ -304,32 +292,52 @@ bot.catch((err) => {
 
 initScheduler(bot);
 
+async function setBotCommands() {
+  try {
+    await bot.api.setMyCommands([
+      { command: 'start', description: 'Начать / перезапустить бота' },
+      { command: 'report', description: 'Показать все задачи' },
+      { command: 'language', description: 'Сменить язык (рус / eng / қаз)' },
+      { command: 'help', description: 'Помощь' },
+      { command: 'ping', description: 'Проверка работы' },
+
+    ]);
+    logger.info('Bot commands registered');
+  } catch (e) {
+    logger.warn(e, 'Failed to set commands');
+  }
+}
+
 const app = createServer();
 
 // Setup webhook or polling
-if (config.webhookDomain) {
-  const webhookUrl = `${config.webhookDomain}/webhook`;
-  app.use(webhookCallback(bot, 'express', {
-    timeoutMilliseconds: 30_000,
-  }));
-  bot.api.setWebhook(webhookUrl);
-  logger.info({ webhookUrl }, 'Webhook configured');
-} else {
-  logger.info('No WEBHOOK_DOMAIN set — using long polling');
-}
+(async () => {
+  if (config.webhookDomain) {
+    const webhookUrl = `${config.webhookDomain}/webhook`;
+    app.use(webhookCallback(bot, 'express', {
+      timeoutMilliseconds: 30_000,
+    }));
+    await bot.api.setWebhook(webhookUrl).catch(() => {});
+    logger.info({ webhookUrl }, 'Webhook configured');
+    await setBotCommands();
+  } else {
+    logger.info('No WEBHOOK_DOMAIN set — using long polling');
+  }
 
-app.listen(config.port, '0.0.0.0', () => {
-  logger.info({ port: config.port }, 'Express server running');
-});
-
-if (!config.webhookDomain) {
-  logger.info('Starting bot polling...');
-  bot.start({
-    onStart: (info) => {
-      logger.info({ username: info.username, model: config.openaiModel, github: config.isGitHubModels, userId: config.allowedUserId || 'any' }, 'Bot started');
-    },
+  app.listen(config.port, '0.0.0.0', () => {
+    logger.info({ port: config.port }, 'Express server running');
   });
-}
+
+  if (!config.webhookDomain) {
+    logger.info('Starting bot polling...');
+    bot.start({
+      onStart: async (info) => {
+        logger.info({ username: info.username, model: config.openaiModel, github: config.isGitHubModels, userId: config.allowedUserId || 'any' }, 'Bot started');
+        await setBotCommands();
+      },
+    });
+  }
+})();
 
 // Graceful shutdown
 async function shutdown(signal: string) {
