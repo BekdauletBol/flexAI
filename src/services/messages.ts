@@ -88,6 +88,39 @@ export function buildConflictMessage(
   return lines.join('\n');
 }
 
+/** Combined conflict message for multiple tasks. */
+export function buildCombinedConflictMessage(conflicts: Conflict[], language: string): string {
+  const lines: string[] = [];
+  const conflictCount = conflicts.length;
+
+  if (language === 'ru') {
+    lines.push(`ОБНАРУЖЕНО КОНФЛИКТОВ — ${conflictCount}`);
+  } else if (language === 'kk') {
+    lines.push(`ҚАЙШЫЛЫҚТАР АНЫҚТАЛДЫ — ${conflictCount}`);
+  } else {
+    lines.push(`CONFLICTS DETECTED — ${conflictCount} task${conflictCount === 1 ? '' : 's'}`);
+  }
+
+  lines.push('');
+
+  for (const c of conflicts) {
+    let line = `— ${c.newTodo.task} · ${c.newTodo.time}  conflicts with  ${c.existingTodo.task} · ${c.existingTodo.time}`;
+    lines.push(line);
+  }
+
+  lines.push('');
+
+  if (language === 'ru') {
+    lines.push('Сохранить все  |  Пропустить все  |  По одному');
+  } else if (language === 'kk') {
+    lines.push('Барлығын сақтау  |  Барлығын өткізіп жіберу  |  Бір-бірден');
+  } else {
+    lines.push('Keep all new  |  Skip all new  |  Resolve one by one');
+  }
+
+  return lines.join('\n');
+}
+
 export function getConflictKeyboard(pendingId: string, language: string): InlineKeyboard {
   const keepLabel = language === 'ru' ? 'Оставить оба' : language === 'kk' ? 'Екеуін де қалдыру' : 'Keep both';
   const reschedLabel = language === 'ru' ? 'Перенести' : language === 'kk' ? 'Жылжыту' : 'Reschedule';
@@ -95,6 +128,94 @@ export function getConflictKeyboard(pendingId: string, language: string): Inline
   return new InlineKeyboard()
     .text(keepLabel, `conflict_keep_${pendingId}`)
     .text(reschedLabel, `conflict_reschedule_${pendingId}`);
+}
+
+export function getCombinedConflictKeyboard(pendingId: string, language: string): InlineKeyboard {
+  const keepLabel = language === 'ru' ? 'Сохранить все' : language === 'kk' ? 'Барлығын сақтау' : 'Keep all';
+  const skipLabel = language === 'ru' ? 'Пропустить все' : language === 'kk' ? 'Барлығын өткізіп жіберу' : 'Skip all';
+  const oneByOneLabel = language === 'ru' ? 'По одному' : language === 'kk' ? 'Бір-бірден' : 'One by one';
+
+  return new InlineKeyboard()
+    .text(keepLabel, `conflict_keep_all_${pendingId}`)
+    .text(skipLabel, `conflict_skip_all_${pendingId}`)
+    .text(oneByOneLabel, `conflict_one_by_one_${pendingId}`);
+}
+
+export function getSingleConflictKeyboard(pendingId: string, conflictIndex: number, language: string): InlineKeyboard {
+  const keepLabel = language === 'ru' ? 'Оставить' : language === 'kk' ? 'Қалдыру' : 'Keep';
+  const reschedLabel = language === 'ru' ? 'Перенести' : language === 'kk' ? 'Жылжыту' : 'Reschedule';
+  const nextLabel = language === 'ru' ? 'Пропустить' : language === 'kk' ? 'Өткізіп жіберу' : 'Skip';
+
+  return new InlineKeyboard()
+    .text(keepLabel, `conflict_keep_idx_${pendingId}_${conflictIndex}`)
+    .text(reschedLabel, `conflict_reschedule_idx_${pendingId}_${conflictIndex}`)
+    .text(nextLabel, `conflict_skip_idx_${pendingId}_${conflictIndex}`);
+}
+
+// ─── Interactive Reschedule Picker ─────────────────────────────────────────────
+
+export function buildRescheduleDatePicker(taskName: string, language: string): string {
+  if (language === 'ru') return `RESCHEDULE\n\n— ${taskName}\n\nВыберите дату:`;
+  if (language === 'kk') return `ҚАЙТА ЖОСПАРЛАУ\n\n— ${taskName}\n\nКүнді таңдаңыз:`;
+  return `RESCHEDULE\n\n— ${taskName}\n\nSelect a date:`;
+}
+
+export function getRescheduleDateKeyboard(language: string): InlineKeyboard {
+  const now = new Date();
+  const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const tom = new Date(now); tom.setDate(tom.getDate() + 1);
+  const in2 = new Date(now); in2.setDate(in2.getDate() + 2);
+
+  const today = fmt(now);
+  const tomorrow = fmt(tom);
+  const dayAfter = fmt(in2);
+
+  const todayLabel = language === 'ru' ? `Сегодня · ${today}` : language === 'kk' ? `Бүгін · ${today}` : `Today · ${today}`;
+  const tomLabel = language === 'ru' ? `Завтра · ${tomorrow}` : language === 'kk' ? `Ертең · ${tomorrow}` : `Tomorrow · ${tomorrow}`;
+  const in2Label = language === 'ru' ? `Через 2 дня · ${dayAfter}` : language === 'kk' ? `2 күннен кейін · ${dayAfter}` : `In 2 days · ${dayAfter}`;
+  const customLabel = language === 'ru' ? 'Другая дата' : language === 'kk' ? 'Басқа күн' : 'Custom date';
+
+  return new InlineKeyboard()
+    .text(todayLabel, 'rs_d_today').row()
+    .text(tomLabel, 'rs_d_tomorrow').row()
+    .text(in2Label, 'rs_d_plus2').row()
+    .text(customLabel, 'rs_d_custom');
+}
+
+export function buildRescheduleTimePicker(taskName: string, dateLabel: string, language: string): string {
+  if (language === 'ru') return `RESCHEDULE\n\n— ${taskName} · ${dateLabel}\n\nВыберите время:`;
+  if (language === 'kk') return `ҚАЙТА ЖОСПАРЛАУ\n\n— ${taskName} · ${dateLabel}\n\nУақытты таңдаңыз:`;
+  return `RESCHEDULE\n\n— ${taskName} · ${dateLabel}\n\nSelect a time:`;
+}
+
+export function getRescheduleTimeKeyboard(language: string): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  const rows = [
+    ['07:00', '08:00', '09:00', '10:00', '11:00'],
+    ['12:00', '13:00', '14:00', '15:00', '16:00'],
+    ['17:00', '18:00', '19:00', '20:00', '21:00'],
+    ['22:00', '23:00', '00:00'],
+  ];
+  for (let i = 0; i < rows.length; i++) {
+    for (const t of rows[i]) kb.text(t, `rs_t_${t}`);
+    if (i < rows.length - 1) kb.row();
+  }
+  const customLabel = language === 'ru' ? 'Свое время' : language === 'kk' ? 'Өз уақытым' : 'Custom time';
+  kb.text(customLabel, 'rs_t_custom');
+  return kb;
+}
+
+export function buildRescheduleConfirm(taskName: string, oldDate: string, oldTime: string, newDate: string, newTime: string, language: string): string {
+  const fmt = (s: string) => {
+    if (!s) return '';
+    const d = new Date(s + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+  const oldLabel = fmt(oldDate);
+  const newLabel = fmt(newDate);
+  if (language === 'ru') return `RESCHEDULED\n\n— ${taskName}\n— ${oldLabel} · ${oldTime}  →  ${newLabel} · ${newTime}\n\nГотово.`;
+  if (language === 'kk') return `ҚАЙТА ЖОСПАРЛАНДЫ\n\n— ${taskName}\n— ${oldLabel} · ${oldTime}  →  ${newLabel} · ${newTime}\n\nДайын.`;
+  return `RESCHEDULED\n\n— ${taskName}\n— ${oldLabel} · ${oldTime}  →  ${newLabel} · ${newTime}\n\nDone.`;
 }
 
 export function buildSequentialReminderMessage(taskName: string, language: string): string {

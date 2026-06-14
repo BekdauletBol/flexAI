@@ -21,28 +21,49 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 export interface IntentResult {
-  intent: 'plan' | 'question' | 'memory_query' | 'reschedule' | 'delete' | 'view' | 'chat' | 'command';
+  intent: 'action' | 'query' | 'memory_query' | 'reschedule' | 'delete' | 'complete' | 'view' | 'chat' | 'command' | 'social' | 'summary';
   confidence: number;
+  target_task?: string;
+  period?: 'today' | 'tomorrow' | 'week' | 'all' | string;
   command?: 'report' | 'weekly' | 'clear' | 'language';
   command_arg?: string;
 }
 
-const SYSTEM_PROMPT = `Determine the type of the user's message. Return ONLY JSON:
+const SYSTEM_PROMPT = `You are an intent classifier for a voice task bot. The user speaks naturally. Determine their intent and return ONLY JSON:
+
 {
-  "intent": "plan" | "question" | "memory_query" | "reschedule" | "delete" | "view" | "chat" | "command",
+  "intent": "action" | "query" | "memory_query" | "reschedule" | "delete" | "complete" | "view" | "chat" | "command" | "social" | "summary",
   "confidence": 0.0-1.0,
+  "target_task": "task name the user wants to delete/complete (extract verbatim) or null",
+  "period": "today" | "tomorrow" | "week" | "all" | null,
   "command": "report" | "weekly" | "clear" | "language" | null,
-  "command_arg": "string (e.g. language code) or null"
+  "command_arg": "language code: ru/en/kk, or null"
 }
 
-plan          — user is describing what they are going to do (tasks, schedule, todos)
-question      — asking about their plans/tasks ("when do I...", "what is scheduled...")
-memory_query  — asking what the bot remembers about them
-reschedule    — asking to move/change a task to a different time
-delete        — asking to delete a plan or task
-view          — asking to see their plans for a day/period
-chat          — general conversation, question unrelated to planning
-command       — user is giving a bot command by voice (e.g. "show my tasks" -> report, "очисти выполненные" -> clear, "weekly report" -> weekly, "смени язык на английский" -> language + arg "en")`;
+INTENT DEFINITIONS:
+action       — user is describing tasks/plans/todos to create ("запланируй", "сделать", "нужно", schedule)
+query        — asking about existing plans/tasks ("что у меня", "when do I", "что запланировано")
+memory_query — asking what the bot remembers about them
+reschedule   — asking to move a task to a different time ("перенеси", "передвинь", move)
+delete       — asking to delete a task ("удали", "отмени", remove)
+complete     — marking a task as done ("выполнил", "сделал", "готово", done)
+view         — asking to see plans for a day/period ("покажи", show)
+chat         — general conversation, question unrelated to planning
+command      — bot control by voice ("покажи задачи" -> report, "очисти выполненные" -> clear, "еженедельный отчет" -> weekly, "смени язык на английский" -> language + arg "en")
+social       — greeting, thanks, small talk ("привет", "спасибо", "как дела", hi)
+summary      — asking for overall status/stats ("сколько задач", "статистика", summary)
+
+EXAMPLES:
+"удали встречу с командой"                    -> {"intent":"delete", "target_task":"встречу с командой"}
+"я выполнил задачу купить билеты"             -> {"intent":"complete", "target_task":"купить билеты"}
+"сколько у меня задач на сегодня?"            -> {"intent":"summary", "period":"today"}
+"покажи все мои задачи"                       -> {"intent":"command", "command":"report"}
+"очисти выполненные"                          -> {"intent":"command", "command":"clear"}
+"weekly report"                               -> {"intent":"command", "command":"weekly"}
+"смени язык на русский"                       -> {"intent":"command", "command":"language", "command_arg":"ru"}
+"перенеси тренировку на 9 утра"               -> {"intent":"reschedule"}
+"какие планы на пятницу?"                     -> {"intent":"view"}
+"отмени ужин в 20:00"                         -> {"intent":"delete", "target_task":"ужин"}`;
 
 export async function detectIntent(transcript: string): Promise<IntentResult> {
   console.log('[Intent] Starting detectIntent, model:', config.openaiModel, 'baseURL:', config.openaiBaseUrl);
@@ -55,7 +76,7 @@ export async function detectIntent(transcript: string): Promise<IntentResult> {
       ],
       response_format: { type: 'json_object' },
       temperature: 0.1,
-      max_tokens: 100,
+      max_tokens: 200,
     }), 30000);
 
     console.log('[Intent] Got response from OpenAI');
@@ -64,14 +85,14 @@ export async function detectIntent(transcript: string): Promise<IntentResult> {
 
     console.log('[Intent] Response content:', content);
     const result = JSON.parse(content) as IntentResult;
-    result.intent = result.intent || 'plan';
+    result.intent = result.intent || 'action';
     result.confidence = result.confidence || 0.5;
 
     console.log(`[Intent] "${result.intent}" (${(result.confidence * 100).toFixed(0)}%)`);
     return result;
   } catch (error) {
-    console.error('[Intent] Detection failed, defaulting to plan:', error);
-    return { intent: 'plan', confidence: 0.5 };
+    console.error('[Intent] Detection failed, defaulting to action:', error);
+    return { intent: 'action', confidence: 0.5 };
   }
 }
 

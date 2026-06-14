@@ -241,6 +241,21 @@ export function rescheduleTask(chatId: number, taskId: string, newTime: string):
   return undefined;
 }
 
+/** Update a task's date AND time by userId + taskId. */
+export function updateTaskDateTime(userId: number, taskId: string, newDate: string, newTime: string): TodoItem | undefined {
+  const plans = userPlans.get(userId) || [];
+  for (const plan of plans) {
+    const todo = plan.todos.find(t => t.id === taskId);
+    if (todo) {
+      todo.date = newDate;
+      todo.time = newTime;
+      persist();
+      return todo;
+    }
+  }
+  return undefined;
+}
+
 /** Archive (mark done) all completed tasks — used by /clear */
 export function archiveCompletedTasks(userId: number): number {
   const plans = userPlans.get(userId) || [];
@@ -314,6 +329,15 @@ export function deletePlansByDate(userId: number, dateStr: string): number {
   const removed = before - (userPlans.get(userId) || []).length;
   if (removed > 0) persist();
   return removed;
+}
+
+/** Delete ALL plans for a user — /nuke command. */
+export function deleteAllUserPlans(userId: number): void {
+  userPlans.delete(userId);
+  for (const [k, v] of latestPlanByChatId.entries()) {
+    if (v.userId === userId) latestPlanByChatId.delete(k);
+  }
+  persist();
 }
 
 /** Delete a plan by its index within user's plan list. */
@@ -405,6 +429,92 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
   persist();
   console.log(`[PlanStore] Added todo: "${task}" at ${time} for ${today}`);
   return todo;
+}
+
+/** Fuzzy find tasks by name — returns ALL substring matches. */
+export function findTasksByName(userId: number, text: string): { plan: StoredPlan; todo: TodoItem }[] {
+  const plans = userPlans.get(userId) || [];
+  const lower = text.toLowerCase().trim();
+  const results: { plan: StoredPlan; todo: TodoItem }[] = [];
+  for (const plan of plans) {
+    for (const todo of plan.todos) {
+      if (todo.task.toLowerCase().includes(lower)) {
+        results.push({ plan, todo });
+      }
+    }
+  }
+  return results;
+}
+
+/** Find a single task by name — exact match first, then substring. */
+export function findTaskByName(userId: number, text: string): { plan: StoredPlan; todo: TodoItem } | null {
+  const plans = userPlans.get(userId) || [];
+  const lower = text.toLowerCase().trim();
+
+  for (const plan of plans) {
+    for (const todo of plan.todos) {
+      if (todo.task.toLowerCase().trim() === lower) {
+        return { plan, todo };
+      }
+    }
+  }
+
+  for (const plan of plans) {
+    for (const todo of plan.todos) {
+      if (todo.task.toLowerCase().includes(lower)) {
+        return { plan, todo };
+      }
+    }
+  }
+  return null;
+}
+
+/** Mark a task done by userId + taskId. */
+export function markTaskDone(userId: number, taskId: string): TodoItem | undefined {
+  const plans = userPlans.get(userId) || [];
+  for (const plan of plans) {
+    const todo = plan.todos.find(t => t.id === taskId);
+    if (todo) {
+      todo.done = true;
+      persist();
+      return todo;
+    }
+  }
+  return undefined;
+}
+
+/** Get tasks for a period: today, tomorrow, week, all. */
+export function getTasksForPeriod(userId: number, period: string): TodoItem[] {
+  const plans = userPlans.get(userId) || [];
+  const now = new Date();
+  const today = now.toISOString().substring(0, 10);
+
+  let filterDate: string | null = null;
+  if (period === 'today') {
+    filterDate = today;
+  } else if (period === 'tomorrow') {
+    const tom = new Date(now);
+    tom.setDate(tom.getDate() + 1);
+    filterDate = tom.toISOString().substring(0, 10);
+  }
+
+  const results: TodoItem[] = [];
+  for (const plan of plans) {
+    for (const todo of plan.todos) {
+      const todoDate = todo.date || plan.createdAt.substring(0, 10);
+      if (period === 'all') {
+        results.push(todo);
+      } else if (period === 'week') {
+        const planDate = new Date(plan.createdAt);
+        const weekAgo = new Date(now);
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        if (planDate >= weekAgo) results.push(todo);
+      } else if (filterDate && todoDate === filterDate) {
+        results.push(todo);
+      }
+    }
+  }
+  return results;
 }
 
 export function getPlanForWebApp(chatId: number) {

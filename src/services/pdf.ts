@@ -89,40 +89,46 @@ export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
     if (timedTasks.length > 0) {
       const lineX = 60;
       const nodeYs: number[] = [];
+      const nodeSpacing = 60;
+      const pageBottom = PAGE_H - M;
+      let currentY = y + 20;
 
       for (const t of timedTasks) {
-        if (y > MAX_Y - 60) { doc.addPage(); y = M; }
-        
-        const nodeY = y + 7;
-        nodeYs.push(nodeY);
+        if (currentY > pageBottom - nodeSpacing) {
+          doc.addPage();
+          currentY = M + 20;
+          nodeYs.length = 0;
+        }
 
-        // Time
+        nodeYs.push(currentY);
+
+        // Time text at (85, currentY - 6)
         doc.font('Bold').fontSize(13).fillColor(TEXT_PRI);
-        doc.text(t.time!, lineX + 16, y);
-        const timeHeight = doc.y - y;
+        doc.text(t.time!, 85, currentY - 6);
 
-        // Priority
+        // Priority pill (right-aligned)
         const pColor = t.priority === 'high' ? PRI_HIGH : t.priority === 'medium' ? PRI_MED : PRI_LOW;
         const pLabel = t.priority.toUpperCase();
         doc.font('Bold').fontSize(9).fillColor(pColor);
         const pWidth = doc.widthOfString(pLabel) + 12;
         const pX = PAGE_W - M - pWidth;
-        
-        // pill
-        doc.save().roundedRect(pX, y, pWidth, 16, 4).fillOpacity(0.1).fill(pColor).restore();
-        doc.save().roundedRect(pX, y, pWidth, 16, 4).lineWidth(1).strokeColor(pColor).strokeOpacity(0.5).stroke().restore();
-        doc.text(pLabel, pX, y + 4, { width: pWidth, align: 'center' });
 
-        // Task name
+        doc.save().roundedRect(pX, currentY - 6, pWidth, 16, 4).fillOpacity(0.1).fill(pColor).restore();
+        doc.save().roundedRect(pX, currentY - 6, pWidth, 16, 4).lineWidth(1).strokeColor(pColor).strokeOpacity(0.5).stroke().restore();
+        doc.text(pLabel, pX, currentY - 2, { width: pWidth, align: 'center' });
+
+        // Task name at (85, currentY + 10)
         doc.font('Regular').fontSize(14).fillColor(TEXT_PRI);
-        doc.text(t.task, lineX + 16, y + timeHeight + 4, { width: CW - (lineX + 16 - M) - 70 });
+        doc.text(t.task, 85, currentY + 10, { width: CW - (85 - M) - 80 });
 
-        y = doc.y + 16;
+        currentY += nodeSpacing;
       }
 
-      // Draw the vertical line
-      if (nodeYs.length > 0) {
+      // Draw the vertical line from first to last node Y
+      if (nodeYs.length > 1) {
         doc.save().moveTo(lineX, nodeYs[0]).lineTo(lineX, nodeYs[nodeYs.length - 1]).lineWidth(2).strokeColor(ACCENT).stroke().restore();
+      } else if (nodeYs.length === 1) {
+        doc.save().moveTo(lineX, nodeYs[0] - 8).lineTo(lineX, nodeYs[0] + 8).lineWidth(2).strokeColor(ACCENT).stroke().restore();
       }
 
       // Draw the nodes
@@ -131,8 +137,8 @@ export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
         doc.save().circle(lineX, ny, 5).lineWidth(2).strokeColor('#FFFFFF').stroke().restore();
         doc.save().circle(lineX, ny, 4).fill(ACCENT).restore();
       }
-      
-      y += 10;
+
+      y = currentY + 10;
     }
 
     // ── No Time Set ──────────────────────────────────

@@ -3,11 +3,11 @@ import { config } from '../config.js';
 import { transcribeAudio } from '../services/whisper.js';
 import { analyzeTranscript } from '../services/analysis.js';
 import { scheduleReminders, cancelReminderByTaskId } from '../services/scheduler.js';
-import { savePlan, getConflicts, deleteTaskById, findTaskByText, deletePlansByDate, getUserTasks, getAllPlansForLLM, getAllPlans, getWeeklyPlans, archiveCompletedTasks } from '../services/planStore.js';
+import { savePlan, getConflicts, deleteTaskById, findTaskByText, deletePlansByDate, getUserTasks, getAllPlansForLLM, getAllPlans, getWeeklyPlans, archiveCompletedTasks, findTasksByName, findTaskByName, markTaskDone, getTasksForPeriod } from '../services/planStore.js';
 import { getUserConfig, setUserLanguage } from '../services/userConfig.js';
 import { searchPlace, getWeatherForecast, getDirections, generateLocationAdvice } from '../services/location.js';
 import { savePending } from '../services/pendingStore.js';
-import { buildConflictMessage, getConflictKeyboard, getNavKeyboard } from '../services/messages.js';
+import { buildConflictMessage, buildCombinedConflictMessage, getConflictKeyboard, getCombinedConflictKeyboard, getSingleConflictKeyboard, getNavKeyboard } from '../services/messages.js';
 import { startDeliveryFlow } from '../services/delivery.js';
 import { detectIntent, askQuestion, chatReply, extractRescheduleInfo, extractDeleteInfo, extractViewInfo, extractMemoryUpdate } from '../services/intent.js';
 import { getUserMemory, updateUserMemory, formatMemoryForDisplay } from '../services/memoryStore.js';
@@ -104,8 +104,8 @@ export async function handleVoice(ctx: Context) {
       }
     } catch (e) { console.error('[Voice] Memory update error:', e); }
 
-    // Low confidence → ask clarification
-    if (intentResult.confidence < 0.6 && intentResult.intent !== 'plan') {
+    // Low confidence → ask clarification (skip for action/command intents)
+    if (intentResult.confidence < 0.6 && intentResult.intent !== 'action' && intentResult.intent !== 'command') {
       await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id,
         lang === 'ru' ? 'Вы хотите запланировать это или просто спросить?'
         : lang === 'kk' ? 'Сіз мұны жоспарлағыңыз келе ме, әлде сұрағыңыз келе ме?'
@@ -114,21 +114,26 @@ export async function handleVoice(ctx: Context) {
     }
 
     // Route by intent
-    if (intentResult.intent === 'plan') {
+    const intent = intentResult.intent;
+    if (intent === 'action') {
       await handlePlanIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intentResult.intent === 'question') {
+    } else if (intent === 'query') {
       await handleQuestionIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intentResult.intent === 'memory_query') {
+    } else if (intent === 'memory_query') {
       await handleMemoryQueryIntent(ctx, userId, statusMsg, lang);
-    } else if (intentResult.intent === 'reschedule') {
+    } else if (intent === 'reschedule') {
       await handleRescheduleIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intentResult.intent === 'delete') {
+    } else if (intent === 'delete') {
       await handleDeleteIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intentResult.intent === 'view') {
+    } else if (intent === 'complete') {
+      await handleCompleteIntent(ctx, userId, transcript, statusMsg, lang);
+    } else if (intent === 'view') {
       await handleViewIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intentResult.intent === 'chat') {
+    } else if (intent === 'chat' || intent === 'social') {
       await handleChatIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intentResult.intent === 'command') {
+    } else if (intent === 'summary') {
+      await handleSummaryIntent(ctx, userId, intentResult, statusMsg, lang);
+    } else if (intent === 'command') {
       await handleCommandIntent(ctx, userId, intentResult, statusMsg, lang);
     }
 
@@ -196,8 +201,19 @@ async function handlePlanIntent(ctx: Context, userId: number, transcript: string
     }
   }
 
-  // Conflict detection
+  // Conflict detection — collect all conflicts
   const conflicts = ctx.from ? getConflicts(userId, analysis.todos) : [];
+
+  // Separate conflicting vs clean tasks
+  const conflictedIds = new Set(conflicts.map(c => c.newTodo.id));
+  const cleanTodos = analysis.todos.filter(t => !conflictedIds.has(t.id));
+  const conflictTodos = analysis.todos.filter(t => conflictedIds.has(t.id));
+
+  // Save non-conflicting tasks immediately
+  if (ctx.chat && cleanTodos.length > 0) {
+    const cleanAnalysis = { ...analysis, todos: cleanTodos };
+    savePlan(ctx.chat.id, userId, cleanAnalysis);
+  }
 
   const pendingData = {
     userId,
@@ -207,13 +223,15 @@ async function handlePlanIntent(ctx: Context, userId: number, transcript: string
     phase: conflicts.length > 0 ? 'conflict' as const : 'reminder' as const,
     resolvedTodos: analysis.todos,
     reminderIndex: 0,
+    conflictIndex: 0,
   };
 
   const pendingId = savePending(pendingData);
 
   if (conflicts.length > 0) {
-    const conflictMsg = buildConflictMessage(conflicts, analysis.language);
-    const keyboard = getConflictKeyboard(pendingId, analysis.language);
+    // Show combined conflict message
+    const conflictMsg = buildCombinedConflictMessage(conflicts, analysis.language);
+    const keyboard = getCombinedConflictKeyboard(pendingId, analysis.language);
     await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, conflictMsg, { reply_markup: keyboard });
     return;
   }
@@ -395,6 +413,63 @@ async function handleViewIntent(ctx: Context, userId: number, transcript: string
 
   const data = allPlans.length > 3500 ? allPlans.substring(0, 3500) + '...' : allPlans;
   await ctx.reply(data);
+}
+
+async function handleCompleteIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {
+  await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
+  const targetTask = transcript;
+
+  // Try to find the task to complete
+  const matches = findTasksByName(userId, targetTask);
+
+  if (matches.length === 0) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+    await ctx.reply(lang === 'ru' ? 'Задача не найдена.'
+      : lang === 'kk' ? 'Тапсырма табылмады.'
+      : 'Task not found.');
+    return;
+  }
+
+  if (matches.length > 1) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+    const list = matches.map((m, i) => `${i + 1}. ${m.todo.task} · ${m.todo.time || '—'}`).join('\n');
+    await ctx.reply(lang === 'ru' ? `Найдено несколько:\n\n${list}\n\nВведите номер.`
+      : lang === 'kk' ? `Бірнеше табылды:\n\n${list}\n\nНөмірін енгізіңіз.`
+      : `Found multiple:\n\n${list}\n\nReply with the number.`);
+    return;
+  }
+
+  const found = matches[0];
+  if (found.todo.id) {
+    markTaskDone(userId, found.todo.id);
+  }
+
+  try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+  await ctx.reply(lang === 'ru' ? `DONE\n— ${found.todo.task}`
+    : lang === 'kk' ? `ОРЫНДАЛДЫ\n— ${found.todo.task}`
+    : `DONE\n— ${found.todo.task}`);
+}
+
+async function handleSummaryIntent(ctx: Context, userId: number, intentResult: any, statusMsg: any, lang: string) {
+  await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
+  const period = intentResult.period || 'today';
+  const tasks = getTasksForPeriod(userId, period);
+  const done = tasks.filter(t => t.done).length;
+  const pending = tasks.filter(t => !t.done).length;
+
+  try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+
+  const periodLabel = period === 'today' ? (lang === 'ru' ? 'СЕГОДНЯ' : lang === 'kk' ? 'БҮГІН' : 'TODAY')
+    : period === 'tomorrow' ? (lang === 'ru' ? 'ЗАВТРА' : lang === 'kk' ? 'ЕРТЕҢ' : 'TOMORROW')
+    : period === 'week' ? (lang === 'ru' ? 'НЕДЕЛЯ' : lang === 'kk' ? 'АПТА' : 'WEEK')
+    : (lang === 'ru' ? 'ВСЕ' : lang === 'kk' ? 'БАРЛЫҒЫ' : 'ALL');
+
+  await ctx.reply(
+    `SUMMARY — ${periodLabel}\n\n` +
+    `— Pending: ${pending}\n` +
+    `— Done: ${done}\n` +
+    `— Total: ${tasks.length}`
+  );
 }
 
 async function handleChatIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {

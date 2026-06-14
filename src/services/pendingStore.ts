@@ -12,12 +12,13 @@ export interface PendingVoiceNote {
   createdAt: number;
   resolvedTodos: TodoItem[];
   reminderIndex: number;
+  conflictIndex?: number;
 }
 
 const pendingNotes = new Map<string, PendingVoiceNote>();
 
 export type UserFlowState = 
-  | { type: 'awaiting_reschedule'; pendingId: string }
+  | { type: 'awaiting_reschedule'; pendingId: string; conflictIndex?: number; customField?: 'date' | 'time' }
   | { type: 'awaiting_custom_reminder'; pendingId: string; taskIndex: number };
 
 const userFlows = new Map<number, UserFlowState>();
@@ -70,12 +71,52 @@ export function clearUserFlowState(userId: number) {
   userFlows.delete(userId);
 }
 
+// ─── Interactive Reschedule State ──────────────────────────────────────────────
+
+export interface RescheduleState {
+  taskId: string;
+  taskName: string;
+  currentDate: string;
+  currentTime: string;
+  pendingId?: string;
+  conflictIndex?: number;
+  selectedDate?: string;
+  selectedTime?: string;
+  chatId: number;
+  lang: string;
+  createdAt: number;
+}
+
+const rescheduleStates = new Map<number, RescheduleState>();
+
+export function setRescheduleState(userId: number, state: RescheduleState) {
+  rescheduleStates.set(userId, state);
+}
+
+export function getRescheduleState(userId: number): RescheduleState | undefined {
+  const state = rescheduleStates.get(userId);
+  if (state && Date.now() - state.createdAt > 5 * 60 * 1000) {
+    rescheduleStates.delete(userId);
+    return undefined;
+  }
+  return state;
+}
+
+export function clearRescheduleState(userId: number) {
+  rescheduleStates.delete(userId);
+}
+
 // Cleanup task (runs every minute)
 setInterval(() => {
   const now = Date.now();
   for (const [id, note] of pendingNotes.entries()) {
     if (now - note.createdAt > 10 * 60 * 1000) { // 10 minutes
       pendingNotes.delete(id);
+    }
+  }
+  for (const [userId, state] of rescheduleStates.entries()) {
+    if (now - state.createdAt > 5 * 60 * 1000) {
+      rescheduleStates.delete(userId);
     }
   }
 }, 60 * 1000);

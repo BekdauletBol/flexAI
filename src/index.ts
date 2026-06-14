@@ -6,15 +6,15 @@ import { handleVoice } from './handlers/voice.js';
 import { initScheduler } from './services/scheduler.js';
 import { createServer } from './server.js';
 import { setUserLanguage, getUserConfig, setUserLocation, setReminderOffset } from './services/userConfig.js';
-import { getUserTasks, getWeeklyPlans, archiveCompletedTasks, savePlan } from './services/planStore.js';
+import { getUserTasks, getWeeklyPlans, archiveCompletedTasks, savePlan, deleteAllUserPlans, updateTaskDateTime } from './services/planStore.js';
 import { generateFullReport, generateWeeklyReport } from './services/reporter.js';
 import { geocodeCity } from './services/location.js';
 import { generateReportPdf } from './services/pdf.js';
 
-import { getNavKeyboard } from './services/messages.js';
-import { getPending, deletePending, getUserFlowState, setUserFlowState, clearUserFlowState } from './services/pendingStore.js';
+import { getNavKeyboard, buildConflictMessage, buildCombinedConflictMessage, getCombinedConflictKeyboard, getSingleConflictKeyboard, buildRescheduleDatePicker, getRescheduleDateKeyboard, buildRescheduleTimePicker, getRescheduleTimeKeyboard, buildRescheduleConfirm } from './services/messages.js';
+import { getPending, deletePending, getUserFlowState, setUserFlowState, clearUserFlowState, setRescheduleState, getRescheduleState, clearRescheduleState } from './services/pendingStore.js';
 import { startDeliveryFlow, advanceReminderLoop } from './services/delivery.js';
-import { scheduleReminders } from './services/scheduler.js';
+import { scheduleReminders, cancelReminderByTaskId } from './services/scheduler.js';
 
 const bot = new Bot(config.telegramToken);
 
@@ -243,6 +243,14 @@ bot.command('clear', async (ctx) => {
   }
 });
 
+// Hidden — nuke all tasks for testing
+bot.command('nuke', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  deleteAllUserPlans(userId);
+  await ctx.reply('All tasks deleted.');
+});
+
 // Hidden — kept for backward compat but not surfaced in /start
 bot.command('setcity', async (ctx) => {
   const userId = ctx.from?.id;
@@ -344,6 +352,312 @@ bot.callbackQuery('nav_language', async (ctx) => {
   await ctx.reply('Select language / Выберите язык / Тілді таңдаңыз:', { reply_markup: keyboard });
 });
 
+// ─── Combined Conflict Callbacks ──────────────────────────────────────────────
+
+bot.callbackQuery(/^conflict_keep_all_(.+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  if (ctx.chat) {
+    savePlan(ctx.chat.id, pending.userId, pending.analysis);
+  }
+
+  if (ctx.callbackQuery.message) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+  }
+
+  await startDeliveryFlow(ctx, pending);
+});
+
+bot.callbackQuery(/^conflict_skip_all_(.+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  const conflictedIds = new Set(pending.conflicts.map(c => c.newTodo.id));
+  pending.resolvedTodos = pending.analysis.todos.filter(t => !conflictedIds.has(t.id));
+
+  if (ctx.callbackQuery.message) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+  }
+
+  await startDeliveryFlow(ctx, pending);
+});
+
+bot.callbackQuery(/^conflict_one_by_one_(.+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  pending.conflictIndex = 0;
+
+  const conflict = pending.conflicts[0];
+  const conflictMsg = buildConflictMessage([conflict], pending.analysis.language);
+  const keyboard = getSingleConflictKeyboard(pendingId, 0, pending.analysis.language);
+
+  if (ctx.callbackQuery.message) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+  }
+  await ctx.reply(conflictMsg, { reply_markup: keyboard });
+});
+
+bot.callbackQuery(/^conflict_keep_idx_(.+)_(\d+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const conflictIndex = parseInt(ctx.match[2], 10);
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  const nextIndex = conflictIndex + 1;
+
+  if (nextIndex >= pending.conflicts.length) {
+    if (ctx.chat) {
+      savePlan(ctx.chat.id, pending.userId, pending.analysis);
+    }
+    if (ctx.callbackQuery.message) {
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    }
+    await startDeliveryFlow(ctx, pending);
+  } else {
+    pending.conflictIndex = nextIndex;
+    const conflict = pending.conflicts[nextIndex];
+    const conflictMsg = buildConflictMessage([conflict], pending.analysis.language);
+    const keyboard = getSingleConflictKeyboard(pendingId, nextIndex, pending.analysis.language);
+
+    if (ctx.callbackQuery.message) {
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    }
+    await ctx.reply(conflictMsg, { reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery(/^conflict_reschedule_idx_(.+)_(\d+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const conflictIndex = parseInt(ctx.match[2], 10);
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  const conflict = pending.conflicts[conflictIndex];
+  const task = conflict.newTodo;
+  const lang = pending.analysis.language;
+
+  setRescheduleState(ctx.from.id, {
+    taskId: task.id!,
+    taskName: task.task,
+    currentDate: task.date || new Date().toISOString().substring(0, 10),
+    currentTime: task.time || '09:00',
+    pendingId,
+    conflictIndex,
+    chatId: ctx.chat!.id,
+    lang,
+    createdAt: Date.now(),
+  });
+
+  const dateMsg = buildRescheduleDatePicker(task.task, lang);
+  const dateKb = getRescheduleDateKeyboard(lang);
+  if (ctx.callbackQuery.message) {
+    await ctx.editMessageText(dateMsg, { reply_markup: dateKb });
+  } else {
+    await ctx.reply(dateMsg, { reply_markup: dateKb });
+  }
+});
+
+bot.callbackQuery(/^conflict_skip_idx_(.+)_(\d+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const conflictIndex = parseInt(ctx.match[2], 10);
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  const skipTask = pending.conflicts[conflictIndex].newTodo;
+  pending.analysis.todos = pending.analysis.todos.filter(t => t.id !== skipTask.id);
+  pending.resolvedTodos = pending.resolvedTodos.filter(t => t.id !== skipTask.id);
+
+  const nextIndex = conflictIndex + 1;
+
+  if (nextIndex >= pending.conflicts.length) {
+    if (ctx.chat) {
+      savePlan(ctx.chat.id, pending.userId, pending.analysis);
+    }
+    if (ctx.callbackQuery.message) {
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    }
+    await startDeliveryFlow(ctx, pending);
+  } else {
+    pending.conflictIndex = nextIndex;
+    const conflict = pending.conflicts[nextIndex];
+    const conflictMsg = buildConflictMessage([conflict], pending.analysis.language);
+    const keyboard = getSingleConflictKeyboard(pendingId, nextIndex, pending.analysis.language);
+
+    if (ctx.callbackQuery.message) {
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    }
+    await ctx.reply(conflictMsg, { reply_markup: keyboard });
+  }
+});
+
+// ─── Interactive Reschedule Picker ─────────────────────────────────────────────
+
+bot.callbackQuery(/^rs_d_(today|tomorrow|plus2|custom)$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const state = getRescheduleState(userId);
+  if (!state) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+  await ctx.answerCallbackQuery();
+
+  const option = ctx.match[1];
+  const now = new Date();
+
+  if (option === 'custom') {
+    const prompt = state.lang === 'ru' ? 'Введите дату в формате DD.MM (например 15.06)'
+      : state.lang === 'kk' ? 'DD.MM форматында күнді енгізіңіз (мысалы 15.06)'
+      : 'Enter date in DD.MM format (e.g. 15.06)';
+    await ctx.editMessageText(prompt);
+    setUserFlowState(userId, { type: 'awaiting_reschedule', pendingId: '', customField: 'date' });
+    return;
+  }
+
+  let dateObj: Date;
+  if (option === 'today') dateObj = now;
+  else if (option === 'tomorrow') { dateObj = new Date(now); dateObj.setDate(dateObj.getDate() + 1); }
+  else { dateObj = new Date(now); dateObj.setDate(dateObj.getDate() + 2); }
+
+  const dateStr = dateObj.toISOString().substring(0, 10);
+  state.selectedDate = dateStr;
+
+  const dateLabel = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const timeMsg = buildRescheduleTimePicker(state.taskName, dateLabel, state.lang);
+  const timeKb = getRescheduleTimeKeyboard(state.lang);
+
+  await ctx.editMessageText(timeMsg, { reply_markup: timeKb });
+});
+
+bot.callbackQuery(/^rs_t_custom$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const state = getRescheduleState(userId);
+  if (!state) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+  await ctx.answerCallbackQuery();
+
+  const prompt = state.lang === 'ru' ? 'Введите время в формате HH:MM (например 14:30)'
+    : state.lang === 'kk' ? 'HH:MM форматында уақытты енгізіңіз (мысалы 14:30)'
+    : 'Enter time in HH:MM format (e.g. 14:30)';
+  await ctx.editMessageText(prompt);
+  setUserFlowState(userId, { type: 'awaiting_reschedule', pendingId: '', customField: 'time' });
+});
+
+bot.callbackQuery(/^rs_t_(\d{2}:\d{2})$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const state = getRescheduleState(userId);
+  if (!state || !state.selectedDate) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+  await ctx.answerCallbackQuery();
+
+  state.selectedTime = ctx.match[1];
+
+  const confirmMsg = buildRescheduleConfirm(
+    state.taskName, state.currentDate, state.currentTime,
+    state.selectedDate, state.selectedTime, state.lang
+  );
+  const confirmKb = new InlineKeyboard().text(
+    state.lang === 'ru' ? 'Подтвердить' : state.lang === 'kk' ? 'Растау' : 'Confirm',
+    'rs_confirm'
+  );
+  await ctx.editMessageText(confirmMsg, { reply_markup: confirmKb });
+});
+
+bot.callbackQuery('rs_confirm', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = getRescheduleState(userId);
+  if (!state || !state.selectedDate || !state.selectedTime) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+  await ctx.answerCallbackQuery();
+
+  const { taskId, selectedDate, selectedTime, currentDate, currentTime, lang, pendingId, conflictIndex } = state;
+
+  clearRescheduleState(userId);
+  clearUserFlowState(userId);
+
+  // Cancel old reminder
+  cancelReminderByTaskId(taskId);
+
+  // Update task in database
+  const updated = updateTaskDateTime(userId, taskId, selectedDate, selectedTime);
+  if (updated && ctx.chat) {
+    scheduleReminders(ctx.chat.id, userId, [updated], lang);
+  }
+
+  // If batch mode (one by one), advance to next conflict
+  if (pendingId && conflictIndex !== undefined) {
+    const pending = getPending(pendingId);
+    if (pending) {
+      const nextIndex = conflictIndex + 1;
+      if (nextIndex >= pending.conflicts.length) {
+        if (ctx.chat) savePlan(ctx.chat.id, userId, pending.analysis);
+        await ctx.editMessageText(
+          lang === 'ru' ? 'Все конфликты разрешены.' : lang === 'kk' ? 'Барлық қайшылықтар шешілді.' : 'All conflicts resolved.'
+        );
+        await startDeliveryFlow(ctx, pending);
+      } else {
+        pending.conflictIndex = nextIndex;
+        const conflict = pending.conflicts[nextIndex];
+        const conflictMsg = buildConflictMessage([conflict], lang);
+        const keyboard = getSingleConflictKeyboard(pendingId, nextIndex, lang);
+        try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message!.message_id); } catch {}
+        await ctx.reply(conflictMsg, { reply_markup: keyboard });
+      }
+      return;
+    }
+  }
+
+  // Single conflict mode
+  const confirmMsg = buildRescheduleConfirm(
+    state.taskName, currentDate, currentTime,
+    selectedDate, selectedTime, lang
+  );
+  try { await ctx.editMessageText(confirmMsg); } catch {}
+  await ctx.reply(lang === 'ru' ? 'Готово.' : lang === 'kk' ? 'Дайын.' : 'Done.', { reply_markup: getNavKeyboard(lang) });
+});
+
+// ─── Single Conflict Callbacks ─────────────────────────────────────────────────
+
 bot.callbackQuery(/^conflict_keep_(.+)$/, async (ctx) => {
   const pendingId = ctx.match[1];
   const pending = getPending(pendingId);
@@ -358,7 +672,6 @@ bot.callbackQuery(/^conflict_keep_(.+)$/, async (ctx) => {
     savePlan(ctx.chat.id, pending.userId, pending.analysis);
   }
   
-  // Clear the message with conflict buttons
   if (ctx.callbackQuery.message) {
     try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
   }
@@ -366,27 +679,8 @@ bot.callbackQuery(/^conflict_keep_(.+)$/, async (ctx) => {
   await startDeliveryFlow(ctx, pending);
 });
 
-bot.callbackQuery(/^conflict_reschedule_(.+)$/, async (ctx) => {
-  const pendingId = ctx.match[1];
-  const pending = getPending(pendingId);
-  if (!pending) {
-    await ctx.answerCallbackQuery('Expired.');
-    return;
-  }
-  
-  await ctx.answerCallbackQuery();
-  
-  const incomingTask = pending.conflicts[0].newTodo;
-  const prompt = `Enter a new time for: "${incomingTask.task}" (format: HH:MM)`;
-  
-  if (ctx.callbackQuery.message) {
-    await ctx.editMessageText(prompt);
-  } else {
-    await ctx.reply(prompt);
-  }
-  
-  setUserFlowState(pending.userId, { type: 'awaiting_reschedule', pendingId });
-});
+// Note: conflict_reschedule_ is handled above (single conflict) and
+// conflict_reschedule_idx_ is in the combined conflict section
 
 bot.callbackQuery(/^srem_(10|30|60|none|custom)_(.+)$/, async (ctx) => {
   const action = ctx.match[1];
@@ -467,34 +761,96 @@ bot.on('message:text', async (ctx) => {
   const flow = getUserFlowState(userId);
   
   if (flow && flow.type === 'awaiting_reschedule') {
-    const match = ctx.message.text.trim().match(/^(\d{1,2}):(\d{2})$/);
+    const text = ctx.message.text.trim();
+    const state = getRescheduleState(userId);
+
+    // Custom date input: DD.MM[.YYYY]
+    if (flow.customField === 'date') {
+      const match = text.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?$/);
+      if (match && state) {
+        const day = match[1].padStart(2, '0');
+        const month = match[2].padStart(2, '0');
+        let year = match[3];
+        if (!year) year = String(new Date().getFullYear());
+        else if (year.length === 2) year = '20' + year;
+        const dateStr = `${year}-${month}-${day}`;
+        state.selectedDate = dateStr;
+
+        clearUserFlowState(userId);
+
+        const dateObj = new Date(dateStr + 'T12:00:00');
+        const dateLabel = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const timeMsg = buildRescheduleTimePicker(state.taskName, dateLabel, state.lang);
+        const timeKb = getRescheduleTimeKeyboard(state.lang);
+        await ctx.reply(timeMsg, { reply_markup: timeKb });
+        return;
+      }
+      const lang = getLang(userId);
+      await ctx.reply(lang === 'ru' ? 'Неверный формат. Используйте DD.MM (например 15.06).'
+        : lang === 'kk' ? 'Қате формат. DD.MM пайдаланыңыз (мысалы 15.06).'
+        : 'Invalid format. Use DD.MM (e.g. 15.06).');
+      return;
+    }
+
+    // Custom time input: HH:MM
+    if (flow.customField === 'time') {
+      const match = text.match(/^(\d{1,2}):(\d{2})$/);
+      if (match && state) {
+        state.selectedTime = `${match[1].padStart(2, '0')}:${match[2]}`;
+
+        clearUserFlowState(userId);
+
+        const confirmMsg = buildRescheduleConfirm(
+          state.taskName, state.currentDate, state.currentTime,
+          state.selectedDate || '', state.selectedTime, state.lang
+        );
+        const confirmKb = new InlineKeyboard().text(
+          state.lang === 'ru' ? 'Подтвердить' : state.lang === 'kk' ? 'Растау' : 'Confirm',
+          'rs_confirm'
+        );
+        await ctx.reply(confirmMsg, { reply_markup: confirmKb });
+        return;
+      }
+      const lang = getLang(userId);
+      await ctx.reply(lang === 'ru' ? 'Неверный формат. Используйте HH:MM (например 15:30).'
+        : lang === 'kk' ? 'Қате формат. HH:MM пайдаланыңыз (мысалы 15:30).'
+        : 'Invalid format. Use HH:MM (e.g. 15:30).');
+      return;
+    }
+
+    // Legacy flow (HH:MM only) — keep for backward compat with old command flows
+    const match = text.match(/^(\d{1,2}):(\d{2})$/);
     const pending = getPending(flow.pendingId);
-    
     if (match && pending) {
       const hh = match[1].padStart(2, '0');
       const mm = match[2];
       const newTime = `${hh}:${mm}`;
-      
-      const incomingTask = pending.conflicts[0].newTodo;
+
+      const conflictIdx = flow.conflictIndex ?? 0;
+      const incomingTask = pending.conflicts[conflictIdx]?.newTodo ?? pending.conflicts[0].newTodo;
       const todoRef = pending.resolvedTodos.find(t => t.task === incomingTask.task && t.time === incomingTask.time);
-      if (todoRef) {
-        todoRef.time = newTime;
-      }
-      
+      if (todoRef) todoRef.time = newTime;
+
       clearUserFlowState(userId);
-      
-      if (ctx.chat) {
-        savePlan(ctx.chat.id, userId, pending.analysis);
+
+      if (pending.conflicts.length > 0 && conflictIdx < pending.conflicts.length - 1) {
+        const nextIndex = conflictIdx + 1;
+        pending.conflictIndex = nextIndex;
+        const nextConflict = pending.conflicts[nextIndex];
+        const conflictMsg = buildConflictMessage([nextConflict], pending.analysis.language);
+        const keyboard = getSingleConflictKeyboard(flow.pendingId, nextIndex, pending.analysis.language);
+        await ctx.reply(conflictMsg, { reply_markup: keyboard });
+        return;
       }
-      
+
+      if (ctx.chat) savePlan(ctx.chat.id, userId, pending.analysis);
       await startDeliveryFlow(ctx, pending);
       return;
     } else if (!match) {
       const lang = getLang(userId);
-      const msg = lang === 'ru' ? 'Неверный формат. Используйте HH:MM (например 15:30).' 
-                : lang === 'kk' ? 'Қате формат. HH:MM пайдаланыңыз (мысалы 15:30).' 
-                : 'Invalid format. Use HH:MM (e.g. 15:30).';
-      await ctx.reply(msg);
+      await ctx.reply(lang === 'ru' ? 'Неверный формат. Используйте HH:MM (например 15:30).'
+        : lang === 'kk' ? 'Қате формат. HH:MM пайдаланыңыз (мысалы 15:30).'
+        : 'Invalid format. Use HH:MM (e.g. 15:30).');
       return;
     }
   }
