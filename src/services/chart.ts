@@ -102,7 +102,11 @@ export async function generateChart(analysis: AnalysisResult): Promise<Buffer> {
       plugins: {
         title: {
           display: true,
+<<<<<<< HEAD
           text: analysis.title,
+=======
+          text: `Plan: ${analysis.title}`,
+>>>>>>> 65a7f64 (add some features)
           color: '#FFFFFF',
           font: { size: 18, weight: 'bold' as const },
           padding: { bottom: 20 },

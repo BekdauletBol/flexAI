@@ -1,3 +1,5 @@
+export type TimeFrame = 'day' | 'week' | 'month' | 'year';
+
 export interface TodoItem {
   id: string;
   task: string;
@@ -19,6 +21,9 @@ export interface AnalysisResult {
   tags: string[];
   raw_transcript: string;
   language: 'ru' | 'en' | 'kk' | 'mixed';
+  timeframe: TimeFrame;
+  periodStart?: string;
+  periodEnd?: string;
   location_query?: string;
   visit_datetime?: string;
   needs_location_check?: boolean;

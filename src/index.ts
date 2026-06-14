@@ -1,20 +1,20 @@
-import { Bot, InlineKeyboard, webhookCallback } from 'grammy';
+import fs from 'fs';
+import path from 'path';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config.js';
-import { migrateFromJson } from './services/db.js';
 import { handleVoice } from './handlers/voice.js';
-import { initScheduler, scheduleReminders } from './services/scheduler.js';
+import { initScheduler } from './services/scheduler.js';
 import { createServer } from './server.js';
-import { logger } from './logger.js';
 import { setUserLanguage, getUserConfig, setUserLocation, setReminderOffset } from './services/userConfig.js';
 import { getUserTasks, getWeeklyPlans, archiveCompletedTasks, savePlan } from './services/planStore.js';
 import { generateFullReport, generateWeeklyReport } from './services/reporter.js';
 import { geocodeCity } from './services/location.js';
-import { getNavKeyboard } from './services/messages.js';
-import { getPending, getUserFlowState, setUserFlowState, clearUserFlowState } from './services/pendingStore.js';
-import { startDeliveryFlow, advanceReminderLoop } from './services/delivery.js';
-import { handleTextMessage } from './services/textRouter.js';
+import { generateReportPdf } from './services/pdf.js';
 
-migrateFromJson();
+import { getNavKeyboard } from './services/messages.js';
+import { getPending, deletePending, getUserFlowState, setUserFlowState, clearUserFlowState } from './services/pendingStore.js';
+import { startDeliveryFlow, advanceReminderLoop } from './services/delivery.js';
+import { scheduleReminders } from './services/scheduler.js';
 
 const bot = new Bot(config.telegramToken);
 
@@ -37,12 +37,10 @@ const i18n = {
       '— /weekly   отчет за 7 дней',
       '— /clear    архивировать выполненные',
       '— /language сменить язык',
-      '',
-      'Местоположение определяется автоматически.'
     ].join('\n'),
 
     lang_set: 'Язык изменен на русский.',
-    ping: 'работаю',
+    ping: 'понг',
 
     wait_report: 'Загрузка задач...',
     no_tasks: 'Задач пока нет. Отправьте голосовое сообщение.',
@@ -68,8 +66,6 @@ const i18n = {
       '— /weekly   report for the past 7 days',
       '— /clear    archive completed tasks',
       '— /language change language',
-      '',
-      'Location is detected automatically from your messages.'
     ].join('\n'),
 
     lang_set: 'Language set to English.',
@@ -99,12 +95,10 @@ const i18n = {
       '— /weekly   7 күндік есеп',
       '— /clear    орындалғандарды мұрағаттау',
       '— /language тілді өзгерту',
-      '',
-      'Орналасқан жері автоматты түрде анықталады.'
     ].join('\n'),
 
     lang_set: 'Тіл қазақшаға өзгертілді.',
-    ping: 'жұмыс істеймін',
+    ping: 'понг',
 
     wait_report: 'Тапсырмалар жүктелуде...',
     no_tasks: 'Тапсырмалар жоқ. Дауыстық хабарлама жіберіңіз.',
@@ -125,10 +119,21 @@ function getLang(userId: number): Lang {
   return (['ru', 'en', 'kk'].includes(lang) ? lang : 'en') as Lang;
 }
 
+// ─── Access control ───────────────────────────────────────────────────────────
+
+bot.use(async (ctx, next) => {
+  if (config.allowedUserId && ctx.from?.id !== config.allowedUserId) {
+    console.warn(`[Bot] Access denied for user ${ctx.from?.id}`);
+    await ctx.reply('Access denied.');
+    return;
+  }
+  await next();
+});
+
 // ─── Debug middleware ─────────────────────────────────────────────────────────
 
 bot.use(async (ctx, next) => {
-  logger.debug(`[DEBUG] RAW UPDATE #${ctx.update.update_id}: ${JSON.stringify(ctx.update)}`);
+  console.log(`[DEBUG] RAW UPDATE #${ctx.update.update_id}:`, JSON.stringify(ctx.update, null, 2));
   await next();
 });
 
@@ -141,6 +146,7 @@ bot.command('ping', async (ctx) => {
 
 bot.command('start', async (ctx) => {
   const lang = getLang(ctx.from!.id);
+  // Remove any lingering reply keyboard (e.g. old "Share Location" button)
   const navKeyboard = getNavKeyboard(lang);
   await ctx.reply(i18n[lang].start, { reply_markup: navKeyboard });
 });
@@ -183,17 +189,21 @@ bot.command('report', async (ctx) => {
   const statusMsg = await ctx.reply(i18n[lang].wait_report);
 
   try {
-    const report = await generateFullReport(tasks, lang);
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, { reply_markup: getNavKeyboard(lang) });
+    const pdfBuf = await generateReportPdf(tasks, lang);
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+
+    const fn = `report_${userId}_${Date.now()}.pdf`;
+    await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
   } catch (err) {
-    logger.error(err, 'Report generation failed');
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 'Error generating report.');
+    console.error('[Bot] Report generation failed:', err);
+    const report = generateFullReport(tasks, lang);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, { reply_markup: getNavKeyboard(lang) });
   }
 });
 
 bot.command('weekly', async (ctx) => {
   const userId = ctx.from?.id;
-  if (!userId) return;
+  if (!userId || !ctx.chat) return;
 
   const lang = getLang(userId);
   const plans = getWeeklyPlans(userId);
@@ -203,8 +213,20 @@ bot.command('weekly', async (ctx) => {
     return;
   }
 
-  const report = generateWeeklyReport(plans, lang);
-  await ctx.reply(report, { reply_markup: getNavKeyboard(lang) });
+  const statusMsg = await ctx.reply(i18n[lang].wait_report);
+
+  try {
+    const tasks = plans.flatMap(p => p.todos);
+    const pdfBuf = await generateReportPdf(tasks, lang);
+    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {}
+
+    const fn = `weekly_${userId}_${Date.now()}.pdf`;
+    await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Weekly Report', reply_markup: getNavKeyboard(lang) });
+  } catch (err) {
+    console.error('[Bot] Weekly PDF failed:', err);
+    const report = generateWeeklyReport(plans, lang);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, { reply_markup: getNavKeyboard(lang) });
+  }
 });
 
 bot.command('clear', async (ctx) => {
@@ -221,11 +243,14 @@ bot.command('clear', async (ctx) => {
   }
 });
 
+// Hidden — kept for backward compat but not surfaced in /start
 bot.command('setcity', async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
 
+  const lang = getLang(userId);
   const cityName = ctx.match;
+
   if (!cityName) {
     await ctx.reply('Provide a city name: /setcity Almaty');
     return;
@@ -247,7 +272,7 @@ bot.command('setcity', async (ctx) => {
       `Location set.\n\n— ${cityName}\n— ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`
     );
   } catch (err) {
-    logger.error(err, 'Failed to set city');
+    console.error('[Bot] Failed to set city:', err);
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 'Error setting location.');
   }
 });
@@ -263,8 +288,15 @@ bot.callbackQuery('nav_report', async (ctx) => {
     await ctx.reply(i18n[lang].no_tasks);
     return;
   }
-  const report = await generateFullReport(tasks, lang);
-  await ctx.reply(report, { reply_markup: getNavKeyboard(lang) });
+  try {
+    const pdfBuf = await generateReportPdf(tasks, lang);
+    const fn = `report_${userId}_${Date.now()}.pdf`;
+    await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
+  } catch (err) {
+    console.error('[Bot] Report generation failed:', err);
+    const report = generateFullReport(tasks, lang);
+    await ctx.reply(report, { reply_markup: getNavKeyboard(lang) });
+  }
 });
 
 bot.callbackQuery('nav_weekly', async (ctx) => {
@@ -272,12 +304,23 @@ bot.callbackQuery('nav_weekly', async (ctx) => {
   const userId = ctx.from.id;
   const lang = getLang(userId);
   const plans = getWeeklyPlans(userId);
+  if (!ctx.chat) return;
   if (plans.length === 0) {
     await ctx.reply(i18n[lang].no_weekly);
     return;
   }
-  const report = generateWeeklyReport(plans, lang);
-  await ctx.reply(report, { reply_markup: getNavKeyboard(lang) });
+  const statusMsg = await ctx.reply(i18n[lang].wait_report);
+  try {
+    const tasks = plans.flatMap(p => p.todos);
+    const pdfBuf = await generateReportPdf(tasks, lang);
+    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {}
+    const fn = `weekly_${userId}_${Date.now()}.pdf`;
+    await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Weekly Report', reply_markup: getNavKeyboard(lang) });
+  } catch (err) {
+    console.error('[Bot] Weekly PDF failed:', err);
+    const report = generateWeeklyReport(plans, lang);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, { reply_markup: getNavKeyboard(lang) });
+  }
 });
 
 bot.callbackQuery('nav_clear', async (ctx) => {
@@ -315,6 +358,7 @@ bot.callbackQuery(/^conflict_keep_(.+)$/, async (ctx) => {
     savePlan(ctx.chat.id, pending.userId, pending.analysis);
   }
   
+  // Clear the message with conflict buttons
   if (ctx.callbackQuery.message) {
     try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
   }
@@ -381,18 +425,25 @@ bot.callbackQuery(/^srem_(10|30|60|none|custom)_(.+)$/, async (ctx) => {
   
   const offsetMinutes = action === 'none' ? -1 : parseInt(action, 10);
   
+  // Set default (if not none, update their default)
   if (offsetMinutes !== -1) {
     setReminderOffset(ctx.from.id, offsetMinutes);
   }
   
+  // Schedule if not none and has a time
   if (offsetMinutes !== -1 && ctx.chat) {
+    // If it doesn't have a time, we can't schedule an offset reminder, 
+    // but we just skip scheduling. 
     if (currentTask.time) {
       scheduleReminders(ctx.chat.id, pending.userId, [currentTask], pending.analysis.language, offsetMinutes);
     }
   }
   
+  // Move to next task
   pending.reminderIndex++;
   
+  // Loop again by calling delivery (it handles editing the message if we passed ctx, but it actually replies right now)
+  // Since delivery uses ctx.reply, we should delete the old inline message
   if (ctx.callbackQuery.message) {
     try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
   }
@@ -450,6 +501,7 @@ bot.on('message:text', async (ctx) => {
   
   if (flow && flow.type === 'awaiting_custom_reminder') {
     const text = ctx.message.text.trim();
+    // Match either "DD.MM HH:MM" or "HH:MM"
     const matchFull = text.match(/^(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})$/);
     const matchTime = text.match(/^(\d{1,2}):(\d{2})$/);
     const pending = getPending(flow.pendingId);
@@ -459,11 +511,14 @@ bot.on('message:text', async (ctx) => {
       const task = todos[flow.taskIndex];
       
       if (matchFull) {
+        // e.g. "12.06 15:30"
         task.time = `${matchFull[1].padStart(2, '0')}.${matchFull[2].padStart(2, '0')} ${matchFull[3].padStart(2, '0')}:${matchFull[4]}`;
       } else if (matchTime) {
+        // e.g. "15:30"
         task.time = `${matchTime[1].padStart(2, '0')}:${matchTime[2]}`;
       }
       
+      // We assume custom time means reminder is AT that time (offset 0)
       if (ctx.chat) {
         scheduleReminders(ctx.chat.id, userId, [task], pending.analysis.language, 0);
       }
@@ -483,76 +538,56 @@ bot.on('message:text', async (ctx) => {
     }
   }
 
-  // If no flow is active, route through textRouter
-  await handleTextMessage(ctx, ctx.message.text);
+  const lang = getLang(userId);
+  await ctx.reply(i18n[lang].voice_only);
 });
 
 // ─── Error handling ───────────────────────────────────────────────────────────
 
 bot.catch((err) => {
-  logger.error({ updateId: err.ctx.update.update_id, error: err.error }, 'Bot error');
+  console.error(`[${new Date().toISOString()}] Error update ${err.ctx.update.update_id}:`, err.error);
+  const userId = err.ctx.from?.id;
+  const lang = userId ? getLang(userId) : 'en';
+  try {
+    const msg = lang === 'ru' ? 'Произошла ошибка. Попробуйте еще раз.' : lang === 'kk' ? 'Қате орын алды. Қайталап көріңіз.' : 'An error occurred. Please try again.';
+    err.ctx.reply(msg);
+  } catch {}
 });
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
+// Clean up temp files from previous run
+const TEMP_DIR = path.resolve('temp');
+try {
+  if (fs.existsSync(TEMP_DIR)) {
+    const files = fs.readdirSync(TEMP_DIR);
+    for (const f of files) {
+      if (f.endsWith('.ogg')) fs.unlinkSync(path.join(TEMP_DIR, f));
+    }
+    console.log(`[Boot] Cleaned ${files.length} temp files`);
+  }
+} catch (e) {
+  console.error('[Boot] Temp cleanup failed:', e);
+}
+
 initScheduler(bot);
 
-async function setBotCommands() {
-  try {
-    await bot.api.setMyCommands([
-      { command: 'start', description: 'Начать / перезапустить бота' },
-      { command: 'report', description: 'Показать все задачи' },
-      { command: 'weekly', description: 'Отчет за 7 дней' },
-      { command: 'clear', description: 'Архивировать выполненные' },
-      { command: 'language', description: 'Сменить язык (рус / eng / қаз)' },
-      { command: 'help', description: 'Помощь' },
-      { command: 'ping', description: 'Проверка работы' },
-    ]);
-    logger.info('Bot commands registered');
-  } catch (e) {
-    logger.warn(e, 'Failed to set commands');
-  }
-}
-
 const app = createServer();
+app.listen(config.port, '0.0.0.0', () => {
+  console.log(`[Server] Express server running on port ${config.port}`);
+});
 
-(async () => {
-  if (config.webhookDomain) {
-    const webhookUrl = `${config.webhookDomain}/webhook`;
-    app.use(webhookCallback(bot, 'express', {
-      timeoutMilliseconds: 30_000,
-    }));
-    await bot.api.setWebhook(webhookUrl).catch(() => {});
-    logger.info({ webhookUrl }, 'Webhook configured');
-    await setBotCommands();
-  } else {
-    logger.info('No WEBHOOK_DOMAIN set — using long polling');
-  }
-
-  app.listen(config.port, '0.0.0.0', () => {
-    logger.info({ port: config.port }, 'Express server running');
-  });
-
-  if (!config.webhookDomain) {
-    logger.info('Starting bot polling...');
-    bot.start({
-      onStart: async (info) => {
-        logger.info({ username: info.username, model: config.openaiModel, github: config.isGitHubModels, userId: config.allowedUserId || 'any' }, 'Bot started');
-        await setBotCommands();
-      },
-    });
-  }
-})();
-
-// Graceful shutdown
-async function shutdown(signal: string) {
-  logger.info({ signal }, 'Shutting down...');
-  try {
-    await bot.api.deleteWebhook({ drop_pending_updates: true });
-    logger.info('Webhook deleted');
-  } catch {}
-  process.exit(0);
-}
-
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+console.log('[Bot] Starting...');
+bot.start({
+  onStart: async (info) => {
+    console.log(`@${info.username} running`);
+    console.log(`   Model: ${config.openaiModel} | GitHub: ${config.isGitHubModels} | User: ${config.allowedUserId || 'any'}`);
+    // Dismiss any stale reply keyboard left by a previous bot version
+    if (config.allowedUserId) {
+      try {
+        await bot.api.sendMessage(config.allowedUserId, '.', { reply_markup: { remove_keyboard: true } });
+        await bot.api.sendMessage(config.allowedUserId, 'Ready.', { reply_markup: { remove_keyboard: true } });
+      } catch {}
+    }
+  },
+});

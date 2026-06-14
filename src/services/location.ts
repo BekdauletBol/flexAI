@@ -5,9 +5,26 @@ import OpenAI from 'openai';
 const openai = new OpenAI({
   apiKey: config.openaiApiKey,
   ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
+<<<<<<< HEAD
   timeout: 15000,
   maxRetries: 0,
+=======
+  timeout: 30000,
+  maxRetries: 1,
+>>>>>>> 65a7f64 (add some features)
 });
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId!);
+  }
+}
 
 interface PlaceResult {
   name: string;
@@ -153,7 +170,7 @@ export async function generateLocationAdvice(
   ].filter(Boolean).join('\n');
 
   try {
-    const res = await openai.chat.completions.create({
+    const res = await withTimeout(openai.chat.completions.create({
       model: config.openaiModel,
       messages: [
         { role: 'system', content: `You give short, practical location advice in ${lang}. Be concise (3-4 sentences max). Include emoji.` },
@@ -161,7 +178,7 @@ export async function generateLocationAdvice(
       ],
       temperature: 0.5,
       max_tokens: 300,
-    });
+    }), 30000);
     return res.choices[0]?.message?.content || '';
   } catch (err) {
     logger.error(err, '[Location] Advice generation failed:');

@@ -18,45 +18,30 @@ export function buildSummaryMessage(
   language: string,
   recordedAt: Date
 ): string {
-  const time = recordedAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
-
   const lines: string[] = [];
 
-  if (language === 'ru') lines.push('СВОДКА');
-  else if (language === 'kk') lines.push('ҚЫСҚАША');
-  else lines.push('SUMMARY');
+  if (language === 'ru') lines.push('СОХРАНЕНО');
+  else if (language === 'kk') lines.push('САҚТАЛДЫ');
+  else lines.push('SAVED');
 
   lines.push('');
-  lines.push(title);
 
-  if (language === 'ru') lines.push(`Записано в ${time}.`);
-  else if (language === 'kk') lines.push(`${time} сағатта жазылды.`);
-  else lines.push(`Note recorded at ${time}.`);
-
-  if (todos.length > 0) {
-    lines.push('');
-    lines.push(SEP);
-    lines.push('');
-
-    if (language === 'ru') lines.push('ЗАДАЧИ');
-    else if (language === 'kk') lines.push('ТАПСЫРМАЛАР');
-    else lines.push('TASKS');
-
-    lines.push('');
-
-    for (const t of todos) {
-      let line = `— ${t.task} · ${formatPriority(t.priority)}`;
-      if (t.time) line += ` · ${t.time}`;
-      if (t.location) line += ` · ${t.location}`;
-      lines.push(line);
-    }
+  for (const t of todos) {
+    let line = `— ${t.task}`;
+    if (t.time) line += ` · ${t.time}`;
+    lines.push(line);
   }
 
-  if (tags.length > 0) {
-    lines.push('');
-    lines.push(SEP);
-    lines.push('');
-    lines.push(tags.join(' '));
+  lines.push('');
+
+  const count = todos.length;
+  if (language === 'ru') {
+    const label = count === 1 ? 'задача добавлена' : (count > 1 && count < 5) ? 'задачи добавлены' : 'задач добавлено';
+    lines.push(`${count} ${label}.`);
+  } else if (language === 'kk') {
+    lines.push(`${count} тапсырма қосылды.`);
+  } else {
+    lines.push(`${count} task${count === 1 ? '' : 's'} added.`);
   }
 
   return lines.join('\n');

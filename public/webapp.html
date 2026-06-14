@@ -3,152 +3,133 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Plan Assistant</title>
+<title>Plan</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
-    --accent: #1e51de;
-    --accent-glow: rgba(45, 212, 191, 0.25);
-    --sky: #806408;
-    --sky-glow: rgba(56, 189, 248, 0.2);
-    --high: #EF4444;
-    --medium: #F59E0B;
-    --low: #6B7280;
-    --done: #81b910;
-    --bg-primary: var(--tg-theme-bg-color, #0F172A);
-    --bg-secondary: var(--tg-theme-secondary-bg-color, #1E293B);
-    --text-primary: var(--tg-theme-text-color, #F1F5F9);
-    --text-secondary: var(--tg-theme-hint-color, #94A3B8);
-    --card-bg: rgba(30, 41, 59, 0.6);
-    --card-border: rgba(148, 163, 184, 0.1);
-    --glass-blur: 16px;
+    --bg: #FAFAF8;
+    --surface: #FFFFFF;
+    --accent: #FF6600;
+    --accent-soft: #FFF3E6;
+    --text: #1A1A1A;
+    --text-secondary: #888888;
+    --border: #E6E6E6;
+    --high: #E53E3E;
+    --medium: #888888;
+    --low: #BBBBBB;
+    --done: #38A169;
+    --check: #38A169;
+    --font: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   }
 
-  * {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-    -webkit-tap-highlight-color: transparent;
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1A1A1A;
+      --surface: #252525;
+      --accent-soft: #2A1A00;
+      --text: #E6E6E6;
+      --text-secondary: #777777;
+      --border: #333333;
+      --low: #555555;
+    }
   }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
   body {
-    font-family: -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
-    background: var(--bg-primary);
-    color: var(--text-primary);
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
     min-height: 100vh;
-    overflow-x: hidden;
-    padding-bottom: 100px;
-  }
-
-  /* Background ambient glow */
-  body::before {
-    content: '';
-    position: fixed;
-    top: -50%;
-    left: -50%;
-    width: 200%;
-    height: 200%;
-    background: radial-gradient(ellipse at 30% 20%, var(--accent-glow) 0%, transparent 50%),
-                radial-gradient(ellipse at 70% 80%, var(--sky-glow) 0%, transparent 50%);
-    pointer-events: none;
-    z-index: 0;
-  }
-
-  .container {
-    position: relative;
-    z-index: 1;
-    max-width: 480px;
-    margin: 0 auto;
-    padding: 0 16px;
-  }
-
-  /* ─── Header ─── */
-  .header {
-    padding: 20px 0 12px;
-    text-align: center;
-  }
-
-  .header h1 {
-    font-size: 22px;
-    font-weight: 700;
-    background: linear-gradient(135deg, var(--accent), var(--sky));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin-bottom: 6px;
-    line-height: 1.3;
-  }
-
-  .header .summary {
-    font-size: 13px;
-    color: var(--text-secondary);
+    padding-bottom: 72px;
+    font-size: 14px;
     line-height: 1.5;
-    max-width: 360px;
-    margin: 0 auto;
   }
 
-  /* ─── Tags ─── */
-  .tags {
+  .app { max-width: 420px; margin: 0 auto; padding: 0; }
+
+  /* Top bar */
+  .topbar {
     display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 6px;
-    margin: 12px 0 20px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 8px;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
   }
-
-  .tag {
-    font-size: 11px;
+  .topbar-title { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+  .topbar-date { font-size: 12px; color: var(--text-secondary); margin-top: 1px; }
+  .topbar-action {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 13px;
     font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 20px;
-    background: rgba(45, 212, 191, 0.12);
-    color: var(--accent);
-    border: 1px solid rgba(45, 212, 191, 0.2);
-    letter-spacing: 0.3px;
-  }
-
-  /* ─── Section Tabs ─── */
-  .tabs {
-    display: flex;
-    gap: 4px;
-    margin-bottom: 20px;
-    background: var(--card-bg);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
-    border-radius: 14px;
-    padding: 4px;
-    border: 1px solid var(--card-border);
-  }
-
-  .tab {
-    flex: 1;
-    padding: 10px 6px;
-    text-align: center;
-    font-size: 12px;
-    font-weight: 600;
-    border-radius: 10px;
     cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: inherit;
+    transition: opacity 0.15s;
+  }
+  .topbar-action:active { opacity: 0.7; }
+  .topbar-action.secondary {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  /* Tabs */
+  .tab-strip {
+    display: flex;
+    gap: 0;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .tab-btn {
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
     color: var(--text-secondary);
-    user-select: none;
+    cursor: pointer;
+    border: none;
+    background: none;
+    font-family: inherit;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+    margin-bottom: -1px;
   }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-btn:active { opacity: 0.6; }
 
-  .tab.active {
-    background: linear-gradient(135deg, rgba(45, 212, 191, 0.2), rgba(56, 189, 248, 0.15));
-    color: var(--accent);
-    box-shadow: 0 2px 12px rgba(45, 212, 191, 0.15);
+  .panel { display: none; padding: 0 20px; }
+  .panel.active { display: block; }
+
+  /* Progress */
+  .progress-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
   }
-
-  .tab:active {
-    transform: scale(0.96);
+  .progress-track {
+    flex: 1;
+    height: 4px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
   }
-
-  /* ─── Section panels ─── */
-  .section {
-    display: none;
-    animation: fadeIn 0.35s ease;
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.4s;
   }
+  .progress-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
 
+<<<<<<< HEAD
   .section.active {
     display: block;
   }
@@ -174,946 +155,817 @@
   }
 
   .key-point {
+=======
+  /* Task item */
+  .task-item {
+>>>>>>> 65a7f64 (add some features)
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    padding: 10px 14px;
-    margin-bottom: 6px;
-    background: var(--card-bg);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
-    border-radius: 12px;
-    border: 1px solid var(--card-border);
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--text-primary);
-  }
-
-  .key-point::before {
-    content: '✦';
-    color: var(--accent);
-    font-size: 10px;
-    margin-top: 3px;
-    flex-shrink: 0;
-  }
-
-  /* ─── Timeline ─── */
-  .timeline {
-    position: relative;
-    padding-left: 28px;
-  }
-
-  .timeline::before {
-    content: '';
-    position: absolute;
-    left: 9px;
-    top: 8px;
-    bottom: 8px;
-    width: 2px;
-    background: linear-gradient(to bottom, var(--accent), var(--sky), transparent);
-    border-radius: 2px;
-  }
-
-  .timeline-item {
-    position: relative;
-    margin-bottom: 12px;
-    animation: slideIn 0.4s ease forwards;
-    opacity: 0;
-  }
-
-  @keyframes slideIn {
-    from { opacity: 0; transform: translateX(-12px); }
-    to   { opacity: 1; transform: translateX(0); }
-  }
-
-  .timeline-dot {
-    position: absolute;
-    left: -23px;
-    top: 16px;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 2px solid;
-    z-index: 2;
-    transition: all 0.3s ease;
-  }
-
-  .timeline-dot.high   { border-color: var(--high);   background: rgba(239, 68, 68, 0.3); box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
-  .timeline-dot.medium { border-color: var(--medium); background: rgba(245, 158, 11, 0.3); box-shadow: 0 0 8px rgba(245, 158, 11, 0.3); }
-  .timeline-dot.low    { border-color: var(--low);    background: rgba(107, 114, 128, 0.3); }
-  .timeline-dot.done   { border-color: var(--done);   background: rgba(16, 185, 129, 0.3); box-shadow: 0 0 8px rgba(16, 185, 129, 0.4); }
-
-  .timeline-card {
-    background: var(--card-bg);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
-    border: 1px solid var(--card-border);
-    border-radius: 14px;
-    padding: 14px 16px;
-    transition: all 0.3s ease;
-  }
-
-  .timeline-card:active {
-    transform: scale(0.98);
-  }
-
-  .timeline-card.completed {
-    opacity: 0.55;
-  }
-
-  .timeline-card.completed .task-text {
-    text-decoration: line-through;
-    color: var(--text-secondary);
-  }
-
-  .timeline-time {
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--sky);
-    letter-spacing: 0.5px;
-    margin-bottom: 4px;
-  }
-
-  .task-text {
-    font-size: 14px;
-    line-height: 1.5;
-    color: var(--text-primary);
-    transition: all 0.3s ease;
-  }
-
-  .task-location {
-    font-size: 11px;
-    color: var(--text-secondary);
-    margin-top: 4px;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .task-location::before {
-    content: '📍';
-    font-size: 10px;
-  }
-
-  .priority-badge {
-    display: inline-block;
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    padding: 2px 8px;
-    border-radius: 6px;
-    margin-top: 8px;
-  }
-
-  .priority-badge.high   { background: rgba(239, 68, 68, 0.15); color: var(--high); }
-  .priority-badge.medium { background: rgba(245, 158, 11, 0.15); color: var(--medium); }
-  .priority-badge.low    { background: rgba(107, 114, 128, 0.15); color: var(--low); }
-
-  /* ─── Todo List ─── */
-  .todo-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 14px 16px;
-    margin-bottom: 8px;
-    background: var(--card-bg);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
-    border: 1px solid var(--card-border);
-    border-radius: 14px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
     cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    user-select: none;
+    transition: opacity 0.2s;
   }
+  .task-item:last-child { border-bottom: none; }
+  .task-item.done { opacity: 0.4; }
+  .task-item.done .task-text { text-decoration: line-through; color: var(--text-secondary); }
 
-  .todo-item:active {
-    transform: scale(0.98);
-  }
-
-  .todo-item.completed {
-    opacity: 0.5;
-  }
-
-  .todo-item.completed .todo-text {
-    text-decoration: line-through;
-    color: var(--text-secondary);
-  }
-
-  .todo-checkbox {
-    width: 22px;
-    height: 22px;
-    border-radius: 7px;
-    border: 2px solid var(--text-secondary);
+  .task-check {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border);
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 2px;
     display: flex;
     align-items: center;
     justify-content: center;
-    flex-shrink: 0;
-    transition: all 0.3s ease;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 10px;
+    color: transparent;
+  }
+  .task-check.done {
+    background: var(--check);
+    border-color: var(--check);
+    color: #fff;
   }
 
-  .todo-checkbox.checked {
-    background: var(--done);
-    border-color: var(--done);
-    box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+  .task-body { flex: 1; min-width: 0; }
+  .task-text { font-size: 14px; font-weight: 400; }
+  .task-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .task-time { font-weight: 600; color: var(--text); }
+  .task-prio {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
   }
+  .task-prio.high { background: #FEF2F2; color: var(--high); }
+  .task-prio.medium { background: var(--surface); color: var(--medium); border: 1px solid var(--border); }
+  .task-prio.low { background: var(--surface); color: var(--low); }
 
-  .todo-checkbox.checked::after {
-    content: '✓';
-    color: white;
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .todo-content {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .todo-text {
+  .task-del {
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: none;
+    cursor: pointer;
     font-size: 14px;
-    line-height: 1.4;
-    transition: all 0.3s ease;
-  }
-
-  .todo-meta {
-    font-size: 11px;
     color: var(--text-secondary);
-    margin-top: 3px;
     display: flex;
-    gap: 10px;
     align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
   }
+  .task-item:hover .task-del { opacity: 1; }
 
-  .todo-actions {
+  /* Week grid */
+  .week-grid {
     display: flex;
     gap: 6px;
-    flex-shrink: 0;
+    margin-bottom: 20px;
   }
-
-  .action-btn {
-    width: 36px;
-    height: 36px;
+  .week-day {
+    flex: 1;
+    text-align: center;
+    padding: 10px 4px;
     border-radius: 10px;
-    border: 1px solid var(--card-border);
-    background: rgba(255,255,255,0.05);
-    display: flex;
-    align-items: center;
-    justify-content: center;
     cursor: pointer;
-    font-size: 16px;
-    transition: all 0.2s ease;
+    transition: all 0.15s;
+  }
+  .week-day:hover { background: var(--surface); }
+  .week-day.active { background: var(--accent-soft); }
+  .week-day.today .week-day-num { color: var(--accent); }
+  .week-day-name { font-size: 10px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
+  .week-day-num { font-size: 18px; font-weight: 700; margin: 4px 0; line-height: 1.2; }
+  .week-day-dot { width: 4px; height: 4px; border-radius: 50%; margin: 0 auto; }
+  .week-day-dot.has { background: var(--accent); }
+  .week-day-dot.full { background: var(--high); }
+
+  /* Section head */
+  .section-head {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    padding-top: 4px;
   }
 
-  .action-btn:active {
-    transform: scale(0.9);
-    background: rgba(255,255,255,0.1);
+  /* Plan card (long-term) */
+  .plan-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .plan-card:active { border-color: var(--accent); }
+  .plan-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .plan-card-title { font-size: 15px; font-weight: 600; }
+  .plan-card-sub { font-size: 12px; color: var(--text-secondary); }
+  .plan-card-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 3px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+  .plan-card-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.4s;
+  }
+  .plan-card-meta { font-size: 11px; color: var(--text-secondary); margin-top: 6px; display: flex; gap: 12px; }
+
+  /* Empty */
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-secondary);
+    font-size: 13px;
   }
 
-  /* ─── Reschedule Modal ─── */
+  /* Modal */
   .modal-overlay {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.6);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    z-index: 100;
+    background: rgba(0,0,0,0.35);
+    z-index: 200;
     align-items: flex-end;
     justify-content: center;
-    animation: fadeOverlay 0.25s ease;
   }
-
-  .modal-overlay.show {
-    display: flex;
-  }
-
-  @keyframes fadeOverlay {
-    from { opacity: 0; }
-    to   { opacity: 1; }
-  }
-
+  .modal-overlay.show { display: flex; }
   .modal-sheet {
+    background: var(--bg);
+    border-radius: 16px 16px 0 0;
+    padding: 20px 20px max(20px, env(safe-area-inset-bottom));
+    max-width: 420px;
     width: 100%;
-    max-width: 480px;
-    background: var(--bg-secondary);
-    border-radius: 20px 20px 0 0;
-    padding: 20px 20px 32px;
-    animation: slideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-    border-top: 1px solid var(--card-border);
+    animation: slideUp 0.25s ease;
   }
-
   @keyframes slideUp {
     from { transform: translateY(100%); }
-    to   { transform: translateY(0); }
+    to { transform: translateY(0); }
   }
-
   .modal-handle {
     width: 36px;
     height: 4px;
-    background: var(--text-secondary);
+    background: var(--border);
     border-radius: 4px;
     margin: 0 auto 16px;
-    opacity: 0.4;
   }
-
-  .modal-title {
-    font-size: 16px;
-    font-weight: 700;
-    margin-bottom: 4px;
-    text-align: center;
-  }
-
-  .modal-subtitle {
-    font-size: 12px;
-    color: var(--text-secondary);
-    text-align: center;
-    margin-bottom: 20px;
-  }
-
-  .time-input-wrap {
-    display: flex;
-    justify-content: center;
-    margin-bottom: 20px;
-  }
-
-  .time-input {
-    font-size: 32px;
-    font-weight: 700;
-    text-align: center;
-    background: rgba(255,255,255,0.05);
-    border: 2px solid var(--card-border);
-    border-radius: 14px;
-    color: var(--text-primary);
-    padding: 12px 24px;
-    width: 180px;
+  .modal-title { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+  .modal-sub { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+  .modal-field { margin-bottom: 12px; }
+  .modal-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .modal-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--surface);
+    color: var(--text);
     outline: none;
-    transition: border-color 0.3s ease;
-    font-family: -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+    transition: border-color 0.15s;
   }
-
-  .time-input:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 20px var(--accent-glow);
+  .modal-input:focus { border-color: var(--accent); }
+  .modal-select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+    appearance: none;
   }
-
-  .modal-actions {
-    display: flex;
-    gap: 10px;
-  }
-
+  .modal-row { display: flex; gap: 8px; margin-top: 16px; }
   .modal-btn {
     flex: 1;
-    padding: 14px;
-    border: none;
-    border-radius: 12px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
     font-size: 14px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    font-family: inherit;
-  }
-
-  .modal-btn:active {
-    transform: scale(0.97);
-  }
-
-  .modal-btn.cancel {
-    background: rgba(255,255,255,0.08);
-    color: var(--text-secondary);
-  }
-
-  .modal-btn.confirm {
-    background: linear-gradient(135deg, var(--accent), var(--sky));
-    color: #0F172A;
-  }
-
-  /* ─── Reminder Footer ─── */
-  .reminder-section {
-    margin-top: 8px;
-  }
-
-  .reminder-card {
-    background: var(--card-bg);
-    backdrop-filter: blur(var(--glass-blur));
-    -webkit-backdrop-filter: blur(var(--glass-blur));
-    border: 1px solid var(--card-border);
-    border-radius: 16px;
-    padding: 18px 16px;
-  }
-
-  .reminder-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    margin-bottom: 12px;
-    text-align: center;
-  }
-
-  .reminder-buttons {
-    display: flex;
-    gap: 8px;
-  }
-
-  .reminder-btn {
-    flex: 1;
-    padding: 12px 6px;
-    border: 1px solid var(--card-border);
-    border-radius: 12px;
-    background: rgba(255,255,255,0.04);
-    color: var(--text-primary);
-    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.3s ease;
-    text-align: center;
     font-family: inherit;
+    background: var(--surface);
+    color: var(--text);
+    text-align: center;
+    transition: all 0.15s;
   }
+  .modal-btn:active { opacity: 0.7; }
+  .modal-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .modal-btn.danger { background: transparent; color: var(--high); border-color: var(--high); }
 
-  .reminder-btn:active {
-    transform: scale(0.94);
-  }
-
-  .reminder-btn.selected {
-    background: linear-gradient(135deg, rgba(45, 212, 191, 0.2), rgba(56, 189, 248, 0.15));
-    border-color: var(--accent);
-    color: var(--accent);
-    box-shadow: 0 0 16px var(--accent-glow);
-  }
-
-  /* ─── Toast ─── */
+  /* Toast */
   .toast {
     position: fixed;
-    bottom: 24px;
+    bottom: 84px;
     left: 50%;
-    transform: translateX(-50%) translateY(100px);
-    background: var(--bg-secondary);
-    border: 1px solid var(--card-border);
-    border-radius: 14px;
-    padding: 12px 24px;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--text);
+    color: var(--bg);
+    padding: 8px 18px;
+    border-radius: 8px;
     font-size: 13px;
-    font-weight: 600;
-    color: var(--accent);
-    z-index: 200;
+    font-weight: 500;
+    z-index: 300;
     opacity: 0;
-    transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-    white-space: nowrap;
+    transition: all 0.3s;
+    pointer-events: none;
   }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-  .toast.show {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
-
-  /* ─── Empty state ─── */
-  .empty-state {
-    text-align: center;
-    padding: 48px 24px;
-    color: var(--text-secondary);
-  }
-
-  .empty-state .icon {
-    font-size: 48px;
-    margin-bottom: 12px;
-  }
-
-  .empty-state p {
-    font-size: 14px;
-  }
-
-  /* ─── Skeleton/Loading ─── */
-  .loading-wrap {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 60vh;
-    gap: 16px;
-  }
-
-  .spinner {
-    width: 40px;
-    height: 40px;
-    border: 3px solid var(--card-border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .loading-text {
-    font-size: 13px;
-    color: var(--text-secondary);
-  }
-
-  /* Stagger animation delays */
-  .timeline-item:nth-child(1) { animation-delay: 0.05s; }
-  .timeline-item:nth-child(2) { animation-delay: 0.1s; }
-  .timeline-item:nth-child(3) { animation-delay: 0.15s; }
-  .timeline-item:nth-child(4) { animation-delay: 0.2s; }
-  .timeline-item:nth-child(5) { animation-delay: 0.25s; }
-  .timeline-item:nth-child(6) { animation-delay: 0.3s; }
-  .timeline-item:nth-child(7) { animation-delay: 0.35s; }
-  .timeline-item:nth-child(8) { animation-delay: 0.4s; }
-  .timeline-item:nth-child(9) { animation-delay: 0.45s; }
-  .timeline-item:nth-child(10) { animation-delay: 0.5s; }
+  .loading { text-align: center; padding: 40px; color: var(--text-secondary); font-size: 13px; }
 </style>
 </head>
 <body>
 
-<div class="container" id="app">
-  <div class="loading-wrap" id="loading">
-    <div class="spinner"></div>
-    <div class="loading-text" id="loading-text">Loading plan…</div>
+<div class="app" id="app">
+  <div class="topbar" id="topbar">
+    <div>
+      <div class="topbar-title" id="headerTitle">Today</div>
+      <div class="topbar-date" id="headerDate"></div>
+    </div>
+    <button class="topbar-action" id="btnAdd" onclick="openNewTask()">+ Task</button>
   </div>
+
+  <div class="tab-strip">
+    <button class="tab-btn active" data-panel="today">Agenda</button>
+    <button class="tab-btn" data-panel="week">Week</button>
+    <button class="tab-btn" data-panel="month">Month</button>
+    <button class="tab-btn" data-panel="year">Year</button>
+  </div>
+
+  <div id="panel-today" class="panel active"></div>
+  <div id="panel-week" class="panel"></div>
+  <div id="panel-month" class="panel"></div>
+  <div id="panel-year" class="panel"></div>
 </div>
 
-<!-- Reschedule Modal -->
-<div class="modal-overlay" id="rescheduleModal">
+<!-- Modal -->
+<div class="modal-overlay" id="modal">
   <div class="modal-sheet">
     <div class="modal-handle"></div>
-    <div class="modal-title" id="modalTitle">Reschedule</div>
-    <div class="modal-subtitle" id="modalSubtitle"></div>
-    <div class="time-input-wrap">
-      <input type="time" class="time-input" id="newTimeInput">
-    </div>
-    <div class="modal-actions">
-      <button class="modal-btn cancel" id="modalCancel">Cancel</button>
-      <button class="modal-btn confirm" id="modalConfirm">Save</button>
-    </div>
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-sub" id="modalSub"></div>
+    <div id="modalBody"></div>
+    <div class="modal-row" id="modalActions"></div>
   </div>
 </div>
 
-<!-- Toast -->
 <div class="toast" id="toast"></div>
+<div class="loading" id="loading" style="display:none">Loading...</div>
 
 <script>
 (function() {
   'use strict';
 
-  // ─── Telegram Web App ───
   const tg = window.Telegram && window.Telegram.WebApp;
-  if (tg) {
-    tg.ready();
-    tg.expand();
-    tg.enableClosingConfirmation();
-  }
+  if (tg) { tg.ready(); tg.expand(); }
 
-  // ─── API URL ───
   const API_BASE = window.WEBAPP_API_URL || window.location.origin;
-
-  // ─── i18n ───
-  const i18n = {
-    en: {
-      loading: 'Loading plan…',
-      timeline: 'Timeline',
-      tasks: 'Tasks',
-      reminder: 'Reminder',
-      keyPoints: 'Key Points',
-      noTasks: 'No tasks yet',
-      noTasksDesc: 'Your plan tasks will appear here',
-      reschedule: 'Reschedule',
-      rescheduleTask: 'Set new time',
-      cancel: 'Cancel',
-      save: 'Save',
-      completed: 'Completed',
-      rescheduled: 'Rescheduled',
-      reminderLabel: 'Remind me before each task',
-      min15: '15 min',
-      min30: '30 min',
-      hr1: '1 hour',
-      hr2: '2 hours',
-      reminderSet: 'Reminder set',
-      high: 'high',
-      medium: 'medium',
-      low: 'low',
-      errorDecode: 'Could not load plan data',
-    },
-    ru: {
-      loading: 'Загрузка плана…',
-      timeline: 'Таймлайн',
-      tasks: 'Задачи',
-      reminder: 'Напоминание',
-      keyPoints: 'Ключевые моменты',
-      noTasks: 'Задач пока нет',
-      noTasksDesc: 'Ваши задачи из плана появятся здесь',
-      reschedule: 'Перенести',
-      rescheduleTask: 'Укажите новое время',
-      cancel: 'Отмена',
-      save: 'Сохранить',
-      completed: 'Выполнено',
-      rescheduled: 'Перенесено',
-      reminderLabel: 'Напомнить перед каждой задачей',
-      min15: '15 мин',
-      min30: '30 мин',
-      hr1: '1 час',
-      hr2: '2 часа',
-      reminderSet: 'Напоминание установлено',
-      high: 'высокий',
-      medium: 'средний',
-      low: 'низкий',
-      errorDecode: 'Не удалось загрузить план',
-    },
-    kk: {
-      loading: 'Жоспар жүктелуде…',
-      timeline: 'Уақыт',
-      tasks: 'Тапсырмалар',
-      reminder: 'Еске салу',
-      keyPoints: 'Негізгі нүктелер',
-      noTasks: 'Тапсырмалар жоқ',
-      noTasksDesc: 'Жоспар тапсырмалары осында пайда болады',
-      reschedule: 'Ауыстыру',
-      rescheduleTask: 'Жаңа уақыт белгілеңіз',
-      cancel: 'Бас тарту',
-      save: 'Сақтау',
-      completed: 'Орындалды',
-      rescheduled: 'Ауыстырылды',
-      reminderLabel: 'Әр тапсырма алдында еске салу',
-      min15: '15 мин',
-      min30: '30 мин',
-      hr1: '1 сағат',
-      hr2: '2 сағат',
-      reminderSet: 'Еске салу орнатылды',
-      high: 'жоғары',
-      medium: 'орташа',
-      low: 'төмен',
-      errorDecode: 'Жоспар деректерін жүктеу мүмкін болмады',
-    }
-  };
-
-  let lang = 'en';
-  function t(key) { return (i18n[lang] && i18n[lang][key]) || i18n.en[key] || key; }
-
-  // ─── Decode plan data from URL hash ───
   let plan = null;
+  let allPlans = [];
+  let memoryData = null;
+  let selectedWeekDay = null;
+  let activePanel = 'today';
 
   function decodePlan() {
     try {
-      let hash = location.hash.replace(/^#/, '');
+      const hash = location.hash.replace(/^#/, '');
       if (!hash) return null;
-      // Decode base64
-      const json = atob(hash);
-      return JSON.parse(json);
-    } catch (e) {
-      console.error('Failed to decode plan:', e);
-      return null;
+      return JSON.parse(atob(hash));
+    } catch { return null; }
+  }
+
+  function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._hide);
+    t._hide = setTimeout(() => t.classList.remove('show'), 2000);
+  }
+
+  function showLoading() { document.getElementById('loading').style.display = 'block'; }
+  function hideLoading() { document.getElementById('loading').style.display = 'none'; }
+
+  function openModal(title, sub, bodyHtml, actions) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalSub').textContent = sub || '';
+    document.getElementById('modalBody').innerHTML = bodyHtml;
+    const acts = document.getElementById('modalActions');
+    acts.innerHTML = '';
+    for (const a of actions) {
+      const btn = document.createElement('div');
+      btn.className = 'modal-btn' + (a.primary ? ' primary' : '') + (a.danger ? ' danger' : '');
+      btn.textContent = a.label;
+      btn.onclick = a.action;
+      acts.appendChild(btn);
     }
+    document.getElementById('modal').classList.add('show');
   }
 
-  // ─── Toast ───
-  function showToast(message) {
-    const toast = document.getElementById('toast');
-    toast.textContent = message;
-    toast.classList.add('show');
-    if (tg) tg.HapticFeedback && tg.HapticFeedback.impactOccurred('light');
-    setTimeout(() => toast.classList.remove('show'), 2400);
+  function closeModal() {
+    document.getElementById('modal').classList.remove('show');
   }
+  document.getElementById('modal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+  });
 
-  // ─── API Calls ───
   async function apiPost(path, body) {
+    showLoading();
     try {
-      const fullBody = Object.assign({}, body, {
+      const full = Object.assign({}, body, {
         chatId: plan ? plan.chatId : null,
-        userId: plan ? plan.userId : null
+        userId: plan ? plan.userId : null,
       });
-      const res = await fetch(API_BASE + path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fullBody)
+      const r = await fetch(API_BASE + path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(full)
       });
-      return await res.json();
-    } catch (e) {
-      console.error('API error:', e);
-      return null;
-    }
+      return await r.json();
+    } catch { return null; }
+    finally { hideLoading(); }
   }
 
-  // ─── Reschedule Modal ───
-  let rescheduleTaskId = null;
-
-  function openRescheduleModal(taskId, currentTime, taskText) {
-    rescheduleTaskId = taskId;
-    document.getElementById('modalTitle').textContent = t('reschedule');
-    document.getElementById('modalSubtitle').textContent = taskText;
-    const input = document.getElementById('newTimeInput');
-    input.value = currentTime || '12:00';
-    document.getElementById('modalCancel').textContent = t('cancel');
-    document.getElementById('modalConfirm').textContent = t('save');
-    document.getElementById('rescheduleModal').classList.add('show');
-    setTimeout(() => input.focus(), 350);
+  async function apiGet(path) {
+    showLoading();
+    try {
+      const r = await fetch(API_BASE + path);
+      return await r.json();
+    } catch { return null; }
+    finally { hideLoading(); }
   }
 
-  function closeRescheduleModal() {
-    document.getElementById('rescheduleModal').classList.remove('show');
-    rescheduleTaskId = null;
+  function esc(s) {
+
+  function esc(s) {
+    if (s == null) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
   }
 
-  document.getElementById('modalCancel').addEventListener('click', closeRescheduleModal);
-  document.getElementById('rescheduleModal').addEventListener('click', function(e) {
-    if (e.target === this) closeRescheduleModal();
-  });
-
-  document.getElementById('modalConfirm').addEventListener('click', async function() {
-    if (!rescheduleTaskId) return;
-    const newTime = document.getElementById('newTimeInput').value;
-    if (!newTime) return;
-
-    await apiPost('/api/todo/reschedule', { taskId: rescheduleTaskId, newTime: newTime });
-
-    // Update local state
-    const todo = plan.todos.find(t => t.id === rescheduleTaskId);
-    if (todo) {
-      todo.time = newTime;
-      renderAll();
-    }
-
-    showToast('✅ ' + t('rescheduled'));
-    closeRescheduleModal();
-  });
-
-  // ─── Render Functions ───
-  let activeTab = 'timeline';
-
-  function sortByTime(todos) {
-    return [...todos].sort((a, b) => {
-      const ta = a.time || '99:99';
-      const tb = b.time || '99:99';
-      return ta.localeCompare(tb);
-    });
+  function todayStr() {
+    return new Date().toISOString().substring(0, 10);
   }
 
-  function renderHeader() {
-    return `
-      <div class="header">
-        <h1>${escHtml(plan.title || '')}</h1>
-        ${plan.summary ? `<p class="summary">${escHtml(plan.summary)}</p>` : ''}
-      </div>
-      ${plan.tags && plan.tags.length ? `
-        <div class="tags">
-          ${plan.tags.map(tag => `<span class="tag">${escHtml(tag)}</span>`).join('')}
-        </div>
-      ` : ''}
-    `;
+  function todayTodos() {
+    if (!plan || !plan.todos) return [];
+    const td = todayStr();
+    return plan.todos.filter(t => !t.date || t.date === td);
   }
 
-  function renderTabs() {
-    return `
-      <div class="tabs">
-        <div class="tab ${activeTab === 'timeline' ? 'active' : ''}" data-tab="timeline">📋 ${t('timeline')}</div>
-        <div class="tab ${activeTab === 'tasks' ? 'active' : ''}" data-tab="tasks">✅ ${t('tasks')}</div>
-        <div class="tab ${activeTab === 'reminder' ? 'active' : ''}" data-tab="reminder">🔔 ${t('reminder')}</div>
-      </div>
-    `;
+  function parseTime(time) {
+    if (!time) return 9999;
+    const [h, m] = time.split(':').map(Number);
+    return h * 60 + (m || 0);
   }
 
-  function renderKeyPoints() {
-    if (!plan.key_points || !plan.key_points.length) return '';
-    return `
-      <div class="key-points">
-        <div class="section-label">${t('keyPoints')}</div>
-        ${plan.key_points.map(kp => `<div class="key-point">${escHtml(kp)}</div>`).join('')}
-      </div>
-    `;
+  function sortTodos(todos) {
+    return [...todos].sort((a, b) => parseTime(a.time) - parseTime(b.time));
   }
 
-  function renderTimeline() {
-    const sorted = sortByTime(plan.todos || []);
-    if (!sorted.length) {
-      return `
-        <div class="section active" id="section-timeline">
-          <div class="empty-state">
-            <div class="icon">📭</div>
-            <p>${t('noTasks')}</p>
-          </div>
-        </div>
-      `;
-    }
-
-    return `
-      <div class="section ${activeTab === 'timeline' ? 'active' : ''}" id="section-timeline">
-        <div class="timeline">
-          ${sorted.map((todo, i) => {
-            const dotClass = todo.done ? 'done' : (todo.priority || 'low');
-            const cardClass = todo.done ? 'completed' : '';
-            return `
-              <div class="timeline-item" style="animation-delay:${i * 0.06}s">
-                <div class="timeline-dot ${dotClass}"></div>
-                <div class="timeline-card ${cardClass}">
-                  <div class="timeline-time">${escHtml(todo.time || '--:--')}</div>
-                  <div class="task-text">${escHtml(todo.task)}</div>
-                  ${todo.location ? `<div class="task-location">${escHtml(todo.location)}</div>` : ''}
-                  <span class="priority-badge ${todo.priority || 'low'}">${t(todo.priority || 'low')}</span>
-                </div>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    `;
+  function prioLabel(p) {
+    return (p || 'medium').toLowerCase();
   }
 
-  function renderTasks() {
-    const sorted = sortByTime(plan.todos || []);
-    if (!sorted.length) {
-      return `
-        <div class="section ${activeTab === 'tasks' ? 'active' : ''}" id="section-tasks">
-          <div class="empty-state">
-            <div class="icon">📭</div>
-            <p>${t('noTasks')}</p>
-          </div>
-        </div>
-      `;
-    }
+  // ─── RENDER ──────────────────────────────────────
 
-    return `
-      <div class="section ${activeTab === 'tasks' ? 'active' : ''}" id="section-tasks">
-        ${sorted.map(todo => {
-          const doneClass = todo.done ? 'completed' : '';
-          const checkedClass = todo.done ? 'checked' : '';
-          return `
-            <div class="todo-item ${doneClass}" data-id="${todo.id}">
-              <div class="todo-checkbox ${checkedClass}" data-action="toggle" data-id="${todo.id}"></div>
-              <div class="todo-content" data-action="toggle" data-id="${todo.id}">
-                <div class="todo-text">${escHtml(todo.task)}</div>
-                <div class="todo-meta">
-                  <span>🕐 ${escHtml(todo.time || '--:--')}</span>
-                  ${todo.location ? `<span>📍 ${escHtml(todo.location)}</span>` : ''}
-                </div>
-              </div>
-              <div class="todo-actions">
-                <div class="action-btn" data-action="reschedule" data-id="${todo.id}" data-time="${todo.time || ''}" data-task="${escAttr(todo.task)}">⏰</div>
-              </div>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    `;
-  }
+  function renderToday() {
+    const p = document.getElementById('panel-today');
+    const todos = todayTodos();
+    const sorted = sortTodos(todos);
+    const pending = sorted.filter(t => !t.done);
+    const done = sorted.filter(t => t.done);
 
-  function renderReminder() {
-    const offsets = [
-      { min: 15, label: t('min15') },
-      { min: 30, label: t('min30') },
-      { min: 60, label: t('hr1') },
-      { min: 120, label: t('hr2') },
-    ];
+    const total = sorted.length;
+    const pct = total > 0 ? Math.round((done.length / total) * 100) : 0;
 
-    return `
-      <div class="section ${activeTab === 'reminder' ? 'active' : ''}" id="section-reminder">
-        <div class="reminder-section">
-          <div class="reminder-card">
-            <div class="reminder-label">🔔 ${t('reminderLabel')}</div>
-            <div class="reminder-buttons">
-              ${offsets.map(o => `
-                <button class="reminder-btn ${selectedReminder === o.min ? 'selected' : ''}" data-action="reminder" data-minutes="${o.min}">
-                  ${o.label}
-                </button>
-              `).join('')}
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
+    let html = `
+      <div class="progress-row">
+        <span class="progress-label">${done.length}/${total}</span>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>`;
 
-  let selectedReminder = null;
-
-  function renderAll() {
-    const app = document.getElementById('app');
-    app.innerHTML = renderHeader() + renderKeyPoints() + renderTabs() + renderTimeline() + renderTasks() + renderReminder();
-    attachListeners();
-  }
-
-  function attachListeners() {
-    // Tabs
-    document.querySelectorAll('.tab').forEach(tab => {
-      tab.addEventListener('click', function() {
-        activeTab = this.dataset.tab;
-        renderAll();
-      });
-    });
-
-    // Toggle todo
-    document.querySelectorAll('[data-action="toggle"]').forEach(el => {
-      el.addEventListener('click', async function(e) {
-        e.stopPropagation();
-        const id = this.dataset.id;
-        const todo = plan.todos.find(t => t.id === id);
-        if (!todo) return;
-        todo.done = !todo.done;
-        renderAll();
-
-        if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
-        showToast(todo.done ? '✅ ' + t('completed') : '↩️ Undo');
-        await apiPost('/api/todo/complete', { taskId: id, done: todo.done });
-      });
-    });
-
-    // Reschedule
-    document.querySelectorAll('[data-action="reschedule"]').forEach(el => {
-      el.addEventListener('click', function(e) {
-        e.stopPropagation();
-        openRescheduleModal(this.dataset.id, this.dataset.time, this.dataset.task);
-      });
-    });
-
-    // Reminder
-    document.querySelectorAll('[data-action="reminder"]').forEach(el => {
-      el.addEventListener('click', async function() {
-        const minutes = parseInt(this.dataset.minutes);
-        selectedReminder = minutes;
-        renderAll();
-        if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
-        showToast('🔔 ' + t('reminderSet'));
-        await apiPost('/api/todo/reminder', { offsetMinutes: minutes });
-      });
-    });
-  }
-
-  // ─── Helpers ───
-  function escHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  function escAttr(str) {
-    return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
-  // ─── Init ───
-  function init() {
-    plan = decodePlan();
-
-    if (!plan) {
-      // Show demo/error
-      document.getElementById('loading-text').textContent = t('errorDecode');
-      document.getElementById('loading').innerHTML = `
-        <div class="empty-state">
-          <div class="icon">📋</div>
-          <p>${i18n.en.errorDecode}</p>
-          <p style="margin-top:8px;font-size:12px;color:var(--text-secondary)">Pass plan data as base64 JSON in URL hash</p>
-        </div>
-      `;
+    if (pending.length === 0 && done.length === 0) {
+      html += '<div class="empty-state">No tasks for today</div>';
+      p.innerHTML = html;
       return;
     }
 
-    // Set language
-    lang = plan.language || 'en';
-    if (!i18n[lang]) lang = 'en';
-    document.documentElement.lang = lang;
+    if (pending.length > 0) {
+      for (const t of pending) {
+        html += renderTaskItem(t);
+      }
+    }
 
-    // Render
-    renderAll();
+    if (done.length > 0) {
+      html += `<div class="section-head" style="margin-top:12px">Done (${done.length})</div>`;
+      for (const t of done) {
+        html += renderTaskItem(t);
+      }
+    }
+
+    p.innerHTML = html;
   }
 
-  // Wait for DOM
+  function renderTaskItem(t) {
+    const time = t.time ? `<span class="task-time">${esc(t.time)}</span>` : '';
+    const loc = t.location ? ` · ${esc(t.location)}` : '';
+    const prio = prioLabel(t.priority);
+    return `
+      <div class="task-item ${t.done ? 'done' : ''}" data-id="${esc(t.id)}" onclick="toggleDone('${esc(t.id)}', ${!t.done})">
+        <div class="task-check ${t.done ? 'done' : ''}">${t.done ? '✓' : ''}</div>
+        <div class="task-body">
+          <div class="task-text">${esc(t.task)}</div>
+          <div class="task-meta">${time} ${loc} <span class="task-prio ${prio}">${prio}</span></div>
+        </div>
+        <div class="task-del" onclick="event.stopPropagation();openEditTask('${esc(t.id)}')">⋯</div>
+      </div>`;
+  }
+
+  // ─── WEEK ────────────────────────────────────────
+
+  function renderWeek() {
+    const p = document.getElementById('panel-week');
+    const now = new Date();
+    const dayNums = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    const todayIdx = (now.getDay() + 6) % 7;
+
+    // 7 day strip
+    let html = '<div class="week-grid">';
+    const weekDays = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - todayIdx + i);
+      const ds = d.toISOString().substring(0, 10);
+      weekDays.push(ds);
+      const isToday = i === todayIdx;
+      const isActive = selectedWeekDay === ds;
+
+      const dayTasks = plan && plan.todos ? plan.todos.filter(t => t.date === ds || (!t.date && isToday)) : [];
+      const has = dayTasks.length > 0;
+
+      html += `
+        <div class="week-day ${isToday ? 'today' : ''} ${isActive ? 'active' : ''}" onclick="selectWeekDay('${ds}')">
+          <div class="week-day-name">${dayNums[i]}</div>
+          <div class="week-day-num">${d.getDate()}</div>
+          <div class="week-day-dot ${has ? 'has' : ''}"></div>
+        </div>`;
+    }
+    html += '</div>';
+
+    // Show selected day
+    const day = selectedWeekDay || todayStr();
+    const dayTasks = plan && plan.todos
+      ? plan.todos.filter(t => t.date === day || (!t.date && day === todayStr()))
+      : [];
+
+    const d = new Date(day + 'T12:00:00');
+    html += `<div class="section-head">${d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</div>`;
+
+    if (dayTasks.length === 0) {
+      html += '<div class="empty-state">Free day</div>';
+    } else {
+      const sorted = sortTodos(dayTasks);
+      for (const t of sorted) {
+        html += renderTaskItem(t);
+      }
+    }
+
+    p.innerHTML = html;
+  }
+
+  // ─── MONTH ────────────────────────────────────────
+
+  function renderMonth() {
+    const p = document.getElementById('panel-month');
+    const monthPlans = allPlans.filter(pl => pl.timeframe === 'month');
+
+    if (monthPlans.length === 0) {
+      p.innerHTML = '<div class="empty-state">No monthly goals yet. Say "my goals for this month" in a voice note.</div>';
+      return;
+    }
+
+    const now = new Date();
+    const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
+    const currentYear = now.getFullYear();
+
+    let html = '';
+    for (const pl of monthPlans) {
+      const hasPeriod = pl.periodStart && pl.periodEnd;
+      const isCurrent = hasPeriod && pl.periodStart.startsWith(currentYear + '-' + currentMonth);
+      const todos = pl.todos || [];
+      const done = todos.filter(t => t.done).length;
+      const total = todos.length;
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+      html += `
+        <div class="plan-card" onclick="viewPlanDetail('${esc(pl.id)}')">
+          <div class="plan-card-head">
+            <div>
+              <div class="plan-card-title">${esc(pl.title)}</div>
+              <div class="plan-card-sub">${esc(pl.date)} ${isCurrent ? '· Current' : ''}</div>
+            </div>
+            <div style="font-size:13px;font-weight:600;color:var(--text-secondary)">${done}/${total}</div>
+          </div>
+          <div class="plan-card-bar"><div class="plan-card-fill" style="width:${pct}%"></div></div>
+          <div class="plan-card-meta">
+            <span>${total} tasks</span>
+            ${pl.periodStart ? `<span>${esc(pl.periodStart)} → ${esc(pl.periodEnd)}</span>` : ''}
+          </div>
+        </div>`;
+    }
+
+    p.innerHTML = html;
+  }
+
+  // ─── YEAR ─────────────────────────────────────────
+
+  function renderYear() {
+    const p = document.getElementById('panel-year');
+    const yearPlans = allPlans.filter(pl => pl.timeframe === 'year');
+
+    if (yearPlans.length === 0) {
+      p.innerHTML = '<div class="empty-state">No yearly goals yet. Say "my yearly goals for 2026" in a voice note.</div>';
+      return;
+    }
+
+    let html = '';
+    for (const pl of yearPlans) {
+      const todos = pl.todos || [];
+      const done = todos.filter(t => t.done).length;
+      const total = todos.length;
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+      html += `
+        <div class="plan-card" onclick="viewPlanDetail('${esc(pl.id)}')">
+          <div class="plan-card-head">
+            <div>
+              <div class="plan-card-title">${esc(pl.title)}</div>
+              <div class="plan-card-sub">${esc(pl.date)}</div>
+            </div>
+            <div style="font-size:13px;font-weight:600;color:var(--text-secondary)">${done}/${total}</div>
+          </div>
+          <div class="plan-card-bar"><div class="plan-card-fill" style="width:${pct}%"></div></div>
+          <div class="plan-card-meta">
+            <span>${total} milestones</span>
+            ${pl.periodStart ? `<span>${esc(pl.periodStart)} → ${esc(pl.periodEnd)}</span>` : ''}
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:8px">
+            ${todos.slice(0, 5).map(t => `· ${esc(t.task)}`).join('<br>')}
+            ${todos.length > 5 ? `<br>· +${todos.length - 5} more` : ''}
+          </div>
+        </div>`;
+    }
+
+    p.innerHTML = html;
+  }
+
+  // ─── VIEW PLAN DETAIL ────────────────────────────
+
+  window.viewPlanDetail = function(planId) {
+    const pl = allPlans.find(p => p.id === planId);
+    if (!pl || !pl.todos) return;
+
+    const todos = pl.todos;
+    const done = todos.filter(t => t.done);
+    const pending = todos.filter(t => !t.done);
+    const total = todos.length;
+    const pct = total > 0 ? Math.round((done.length / total) * 100) : 0;
+
+    let body = `
+      <div class="progress-row">
+        <span class="progress-label">${done.length}/${total} done</span>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>`;
+
+    if (pending.length > 0) {
+      for (const t of pending) {
+        body += renderTaskItem(t);
+      }
+    }
+    if (done.length > 0) {
+      body += `<div class="section-head" style="margin-top:12px;font-size:11px">Done (${done.length})</div>`;
+      for (const t of done) {
+        body += renderTaskItem(t);
+      }
+    }
+
+    openModal(pl.title, pl.date, body, [
+      { label: 'Close', action: closeModal }
+    ]);
+  };
+
+  // ─── ACTIONS ──────────────────────────────────────
+
+  window.toggleDone = async function(id, newDone) {
+    await apiPost('/api/todo/complete', { taskId: id, done: newDone });
+    if (plan && plan.todos) {
+      const t = plan.todos.find(x => x.id === id);
+      if (t) t.done = newDone;
+    }
+    renderAll();
+  };
+
+  window.selectWeekDay = function(ds) {
+    selectedWeekDay = ds;
+    renderAll();
+  };
+
+  window.openNewTask = function() {
+    const now = new Date();
+    const time = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    openModal('New Task', '', `
+      <div class="modal-field">
+        <div class="modal-label">Task</div>
+        <input class="modal-input" id="inpTask" placeholder="e.g. Buy groceries" autofocus>
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">Time</div>
+        <input class="modal-input" id="inpTime" value="${time}" placeholder="HH:MM">
+      </div>
+      <div class="modal-field">
+        <div class="modal-label">Priority</div>
+        <select class="modal-select" id="inpPrio">
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+    `, [
+      { label: 'Cancel', action: closeModal },
+      { label: 'Add', primary: true, action: async () => {
+        const task = document.getElementById('inpTask').value.trim();
+        const time = document.getElementById('inpTime').value.trim();
+        const priority = document.getElementById('inpPrio').value;
+        if (!task) return;
+        closeModal();
+        try {
+          const now = new Date();
+          const date = now.toISOString().substring(0, 10);
+          await apiPost('/api/todo/create', {
+            chatId: plan.chatId,
+            userId: plan.userId,
+            task,
+            time,
+            priority,
+            date
+          });
+          toast('Task added');
+          // Reload all plans and re-render
+          await loadAllPlans();
+          renderAll();
+        } catch (e) {
+          toast('Failed to add task');
+        }
+      }}
+    ]);
+    setTimeout(() => {
+      const inp = document.getElementById('inpTask');
+      if (inp) inp.focus();
+    }, 300);
+  };
+
+  window.openEditTask = function(id) {
+    const t = plan && plan.todos ? plan.todos.find(x => x.id === id) : null;
+    if (!t) return;
+    const isLongTerm = activePanel === 'month' || activePanel === 'year';
+
+    openModal('Edit Task', t.task, `
+      <div class="modal-field">
+        <div class="modal-label">Task</div>
+        <input class="modal-input" id="inpEditTask" value="${esc(t.task)}">
+      </div>
+      ${isLongTerm ? '' : `
+      <div class="modal-field">
+        <div class="modal-label">Time</div>
+        <input class="modal-input" id="inpEditTime" value="${esc(t.time || '')}">
+      </div>`}
+      <div class="modal-field">
+        <div class="modal-label">Priority</div>
+        <select class="modal-select" id="inpEditPrio">
+          <option value="high" ${t.priority === 'high' ? 'selected' : ''}>High</option>
+          <option value="medium" ${t.priority === 'medium' ? 'selected' : ''}>Medium</option>
+          <option value="low" ${t.priority === 'low' ? 'selected' : ''}>Low</option>
+        </select>
+      </div>
+      ${t.location ? `<div class="modal-field"><div class="modal-label">Location</div><div style="font-size:14px">${esc(t.location)}</div></div>` : ''}
+    `, [
+      { label: 'Delete', danger: true, action: async () => {
+        closeModal();
+        await apiPost('/api/todo/delete', { taskId: id, date: '' });
+        if (plan && plan.todos) {
+          plan.todos = plan.todos.filter(x => x.id !== id);
+        }
+        toast('Deleted');
+        renderAll();
+      }},
+      { label: 'Save', primary: true, action: async () => {
+        const task = document.getElementById('inpEditTask').value.trim();
+        const time = document.getElementById('inpEditTime') ? document.getElementById('inpEditTime').value.trim() : t.time;
+        const priority = document.getElementById('inpEditPrio').value;
+        if (!task) return;
+
+        if (time && time !== t.time) {
+          await apiPost('/api/todo/reschedule', { taskId: id, newTime: time });
+        }
+        toast('Saved');
+        closeModal();
+        renderAll();
+      }}
+    ]);
+  };
+
+  // ─── DATA LOADING ─────────────────────────────────
+
+  async function loadAllPlans() {
+    if (!plan || !plan.userId) return;
+    const data = await apiGet('/api/plans/all?userId=' + plan.userId);
+    if (data && data.plans) {
+      allPlans = data.plans;
+      // Plans keep their own todos from server — no enrichment needed
+    }
+  }
+
+  // ─── ROUTER ───────────────────────────────────────
+
+  function renderAll() {
+    const panels = ['today', 'week', 'month', 'year'];
+    for (const p of panels) {
+      document.getElementById('panel-' + p).classList.toggle('active', p === activePanel);
+    }
+
+    // Update topbar
+    const titles = { today: 'Agenda', week: 'Week', month: 'Month', year: 'Year' };
+    document.getElementById('headerTitle').textContent = titles[activePanel] || 'Agenda';
+
+    const now = new Date();
+    const headerD = activePanel === 'today' ? now.toLocaleDateString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric'
+    }) : activePanel === 'month' ? now.toLocaleDateString('en-US', {
+      month: 'long', year: 'numeric'
+    }) : activePanel === 'year' ? String(now.getFullYear()) : '';
+    document.getElementById('headerDate').textContent = headerD;
+
+    // Show add button only for agenda
+    document.getElementById('btnAdd').style.display = activePanel === 'today' ? 'block' : 'none';
+
+    switch (activePanel) {
+      case 'today': renderToday(); break;
+      case 'week': renderWeek(); break;
+      case 'month': renderMonth(); break;
+      case 'year': renderYear(); break;
+    }
+  }
+
+  // ─── INIT ─────────────────────────────────────────
+
+  function init() {
+    plan = decodePlan();
+    if (!plan) {
+      document.querySelector('.app').innerHTML =
+        '<div class="empty-state" style="padding-top:80px">No plan data loaded. Send a voice message to the bot first.</div>';
+      return;
+    }
+
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        activePanel = this.dataset.panel;
+        renderAll();
+        if (tg) tg.HapticFeedback && tg.HapticFeedback.impactOccurred('light');
+      });
+    });
+
+    loadAllPlans().then(() => renderAll());
+  }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

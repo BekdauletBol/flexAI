@@ -5,8 +5,6 @@ import { getUserConfig } from './userConfig.js';
 import { getPlanForWebApp } from './planStore.js';
 import { config } from '../config.js';
 import { InlineKeyboard } from 'grammy';
-
-import { generateChart } from './chart.js';
 import { generatePdf } from './pdf.js';
 
 function fileName(): string {
@@ -60,12 +58,9 @@ export async function advanceReminderLoop(ctx: Context, pending: PendingVoiceNot
     // Sync analysis to matched resolvedTodos (incorporates all reschedules/custom times)
     pending.analysis.todos = todos;
     
-    let chartBuf: Buffer | null = null;
-    try { chartBuf = await generateChart(pending.analysis); } catch {}
-    
     let pdfBuf: Buffer | null = null;
     const fn = fileName();
-    try { pdfBuf = await generatePdf(pending.analysis); } catch {}
+    try { pdfBuf = await generatePdf(pending.analysis); } catch (e) { console.error('[Delivery] PDF generation failed:', e); }
     
     // Mini App keyboard logic
     let webAppKeyboard: InlineKeyboard | undefined;
@@ -77,12 +72,6 @@ export async function advanceReminderLoop(ctx: Context, pending: PendingVoiceNot
         const btnLabel = lang === 'ru' ? 'Открыть план' : lang === 'kk' ? 'Жоспарды ашу' : 'Open plan';
         webAppKeyboard = new InlineKeyboard().webApp(btnLabel, fullUrl);
       }
-    }
-    
-    // Send Chart
-    if (chartBuf) {
-      const chartCaption = lang === 'ru' ? 'График и приоритеты' : lang === 'kk' ? 'Уақыт кестесі мен басымдықтар' : 'Timeline and priorities';
-      await ctx.replyWithPhoto(new InputFile(chartBuf, 'chart.png'), { caption: chartCaption });
     }
     
     // Send PDF

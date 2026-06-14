@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-dotenv.config();
+dotenv.config({ override: true });
 
 const openaiApiKey = process.env.OPENAI_API_KEY || '';
 const isGitHubModels = openaiApiKey.startsWith('ghp_') || openaiApiKey.startsWith('github_pat_');

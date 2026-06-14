@@ -122,12 +122,22 @@ export function scheduleReminders(chatId: number, userId: number, todos: TodoIte
   }
 }
 
+<<<<<<< HEAD
 export function rescheduleReminder(chatId: number, taskId: string, task: string, newTime: string, language: string) {
   const now = new Date();
   const offset = 30;
   const eventTime = new Date(newTime);
   if (isNaN(eventTime.getTime())) return;
 
+=======
+/** Reschedule a single reminder (e.g. from the Mini App). */
+export function rescheduleReminder(chatId: number, taskId: string, task: string, newTime: string, language: string, overrideOffset?: number) {
+  const now = new Date();
+  const eventTime = getEventTimeToday(newTime);
+  if (!eventTime) return;
+
+  const offset = overrideOffset !== undefined ? overrideOffset : 30;
+>>>>>>> 65a7f64 (add some features)
   const triggerAt = eventTime.getTime() - offset * 60 * 1000;
 
   const reminder: ScheduledReminder = {
@@ -200,6 +210,15 @@ async function checkReminders() {
   for (let i = reminders.length - 1; i >= 0; i--) {
     if (reminders[i].notified && reminders[i].triggerAt < cutoff) {
       reminders.splice(i, 1);
+    }
+  }
+}
+
+export function cancelReminderByTaskId(taskId: string) {
+  for (let i = reminders.length - 1; i >= 0; i--) {
+    if (reminders[i].taskId === taskId) {
+      reminders.splice(i, 1);
+      console.log(`[Scheduler] Cancelled reminder for task ${taskId}`);
     }
   }
 }
