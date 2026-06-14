@@ -5,7 +5,7 @@ import { transcribeAudio } from '../services/whisper.js';
 import { analyzeTranscript } from '../services/analysis.js';
 import { generatePdf } from '../services/pdf.js';
 import { scheduleReminders } from '../services/scheduler.js';
-import { savePlan, detectTimeConflicts } from '../services/planStore.js';
+import { savePlan, detectTimeConflicts, getPlan } from '../services/planStore.js';
 import { setUserLocation, getUserConfig } from '../services/userConfig.js';
 import { geocodeCity, searchPlace, getWeatherForecast } from '../services/location.js';
 import { setPendingReminderConfig, getPendingSession, getTaskKeyboard, getTaskMessage, clearPendingSession } from '../services/reminderSession.js';
@@ -143,6 +143,76 @@ export async function handleVoice(ctx: Context) {
     catch (e) {
       logger.error(e, '[Voice] Analysis failed:');
       await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, `Analysis failed.\n\n${transcript}`);
+      return;
+    }
+    // If the model thinks it's social (greeting/thanks), honor that
+    if (analysis.intent === 'social') {
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Got it.');
+      return;
+    }
+    // Reschedule intent — don't save, reply with info
+    if (analysis.intent === 'reschedule') {
+      const lang = analysis.language || 'ru';
+      const msg = lang === 'ru' ? 'Чтобы перенести задачу, напишите: "перенеси [задача] на [время]"'
+        : lang === 'kk' ? 'Тапсырманы ауыстыру үшін: "перенеси [тапсырма] на [уақыт]" деп жазыңыз'
+        : 'To reschedule a task, write: "move [task] to [time]"';
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, msg);
+      return;
+    }
+    // Handle query intent — show existing tasks for the requested date
+    if (analysis.intent === 'query') {
+      const date = analysis.query_date;
+      const chatId = ctx.chat!.id;
+      const plan = getPlan(chatId);
+      const lang = analysis.language || 'ru';
+
+      if (!plan || !plan.todos || plan.todos.length === 0) {
+        const msg = date
+          ? (lang === 'ru' ? `На ${date} задач нет.`
+            : lang === 'kk' ? `${date} күніне тапсырмалар жоқ.`
+            : `Nothing planned for ${date}.`)
+          : (lang === 'ru' ? 'Нет активных задач.'
+            : lang === 'kk' ? 'Белсенді тапсырмалар жоқ.'
+            : 'No active tasks.');
+        await ctx.api.editMessageText(chatId, statusMsg.message_id, msg);
+        return;
+      }
+
+      const tasksOnDate = date
+        ? plan.todos.filter((t: any) => t.date === date && !t.done)
+        : plan.todos.filter((t: any) => !t.done);
+
+      if (tasksOnDate.length === 0) {
+        const msg = date
+          ? (lang === 'ru' ? `На ${date} задач нет.`
+            : lang === 'kk' ? `${date} күніне тапсырмалар жоқ.`
+            : `Nothing planned for ${date}.`)
+          : (lang === 'ru' ? 'Нет активных задач.'
+            : lang === 'kk' ? 'Белсенді тапсырмалар жоқ.'
+            : 'No active tasks.');
+        await ctx.api.editMessageText(chatId, statusMsg.message_id, msg);
+        return;
+      }
+
+      const lines = tasksOnDate.map((t: any) => {
+        let suffix = '';
+        if (t.time) suffix = ` \u00B7 ${t.time}`;
+        const priorityLabel = t.priority === 'high' ? 'High'
+          : t.priority === 'low' ? 'Low'
+          : 'Medium';
+        return `\u2014 ${t.task}${suffix} \u00B7 ${priorityLabel}`;
+      });
+
+      const header = date ? `${date.toUpperCase()}` : (lang === 'ru' ? 'АКТИВНЫЕ ЗАДАЧИ'
+        : lang === 'kk' ? 'БЕЛСЕНДІ ТАПСЫРМАЛАР'
+        : 'ACTIVE TASKS');
+
+      const footer = lang === 'ru'
+        ? `\n\n${tasksOnDate.length} ${tasksOnDate.length === 1 ? 'задача' : 'задач'}`
+        : lang === 'kk' ? `\n\n${tasksOnDate.length} тапсырма`
+        : `\n\n${tasksOnDate.length} task${tasksOnDate.length === 1 ? '' : 's'}`;
+
+      await ctx.api.editMessageText(chatId, statusMsg.message_id, `${header}\n\n${lines.join('\n')}${footer}`);
       return;
     }
 

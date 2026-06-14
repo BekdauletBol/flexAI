@@ -282,6 +282,32 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
+  // Pre-check: user asking about their plans? (no \b — Cyrillic incompatible)
+  const lower = text.toLowerCase().trim();
+  const isQuery = /(?:какие|какой|какая|сколько)\s+(?:у меня|сегодня|завтра|планы|задачи|дела|расписание)/.test(lower)
+    || /что\s+(?:у меня|я|на|сегодня|завтра|там)/.test(lower)
+    || /(?:мои|мой|моя)\s+(?:план|задач|расписание)/.test(lower)
+    || /^(?:какие планы|что у меня|когда у меня|покажи|показать|скажи)\s/.test(lower)
+    || /(?:what|which)\s.*(?:do i have|are my|is my|plans|tasks|schedule|agenda)/.test(lower)
+    || /(?:my plans|my tasks|my schedule|my agenda)/.test(lower)
+    || /(?:қандай|менің)\s+(?:тапсырма|жоспар)/.test(lower);
+
+  if (isQuery) {
+    const plan = getPlan(ctx.chat.id);
+    if (!plan) { await ctx.reply('У вас пока нет сохранённых планов.'); return; }
+    const lines = plan.todos.filter(t => !t.done).map(t => {
+      let s = '';
+      if (t.time) s += ` \u00B7 ${t.time}`;
+      if (t.date) s += ` \u00B7 ${t.date}`;
+      return `\u2014 ${t.task}${s}`;
+    });
+    const msg = lines.length > 0
+      ? `ВАШИ ЗАДАЧИ\n\n${lines.join('\n')}`
+      : 'Нет активных задач.';
+    await ctx.reply(msg);
+    return;
+  }
+
   // Route text through GPT for classification
   await handleTextMessage(ctx, text);
 });

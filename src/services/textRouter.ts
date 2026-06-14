@@ -1,86 +1,11 @@
 import { Context } from 'grammy';
 import { logger } from '../logger.js';
-import { config } from '../config.js';
 import { analyzeTranscript } from './analysis.js';
 import { savePlan, detectTimeConflicts, completeTask, rescheduleTask, getPlan } from './planStore.js';
 import { findTaskByDescription, getCompletedTasksToday } from './db.js';
 import { setPendingReminderConfig, getPendingSession, getTaskKeyboard, getTaskMessage } from './reminderSession.js';
-import { setPendingPlan, advanceStep, resolveConflict } from './pendingPlan.js';
+import { setPendingPlan } from './pendingPlan.js';
 import { InlineKeyboard } from 'grammy';
-
-interface ClassifiedIntent {
-  intent: 'query' | 'reschedule' | 'new_task' | 'complete' | 'what_done' | 'unknown';
-  date?: string;
-  taskDescription?: string;
-  newTime?: string;
-  newDate?: string;
-}
-
-async function classifyIntent(text: string): Promise<ClassifiedIntent> {
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-
-  const prompt = `You are a task management assistant. Classify the user message and extract parameters.
-
-Today is ${dateStr}. Resolve relative dates into YYYY-MM-DD.
-
-Return ONLY valid JSON with fields:
-- "intent": "query" | "reschedule" | "new_task" | "complete" | "what_done" | "unknown"
-- "date": resolved date YYYY-MM-DD or null
-- "taskDescription": task being referenced or null
-- "newTime": HH:MM or null (for reschedule)
-- "newDate": YYYY-MM-DD or null (for reschedule new date)
-
-Examples:
-- "What do I have on June 20th?" → {"intent":"query","date":"2026-06-20","taskDescription":null,"newTime":null,"newDate":null}
-- "Move the dentist to June 21st at 2pm" → {"intent":"reschedule","date":null,"taskDescription":"dentist","newTime":"14:00","newDate":"2026-06-21"}
-- "Remind me to call mom tonight at 8pm" → {"intent":"new_task"}
-- "I just finished the report" → {"intent":"complete","taskDescription":"report"}
-- "What did I do today?" → {"intent":"what_done","date":"${now.toISOString().slice(0, 10)}"}
-- "Hello" → {"intent":"unknown"}
-
-Message: "${text}"`;
-
-  try {
-    const OpenAI = (await import('openai')).default;
-    const openai = new OpenAI({
-      apiKey: config.openaiApiKey,
-      ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
-    });
-    const response = await openai.chat.completions.create({
-      model: config.openaiModel,
-      messages: [
-        { role: 'system', content: 'You classify user messages for a task bot. Return JSON only.' },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.1,
-    });
-    const content = response.choices[0]?.message?.content || '{}';
-    const parsed = JSON.parse(content) as ClassifiedIntent;
-    if (!['query', 'reschedule', 'new_task', 'complete', 'what_done', 'unknown'].includes(parsed.intent)) {
-      return { intent: 'unknown' };
-    }
-    return parsed;
-  } catch (err) {
-    logger.error(err, '[TextRouter] Classification failed');
-    return { intent: 'unknown' };
-  }
-}
-
-function formatTodoList(todos: any[], lang: string): string {
-  if (todos.length === 0) {
-    return lang === 'ru' ? 'Нет задач на этот день.'
-      : lang === 'kk' ? 'Бұл күнге тапсырмалар жоқ.'
-      : 'No tasks for this day.';
-  }
-  const lines = todos.map(t => {
-    let suffix = '';
-    if (t.time) suffix = ` \u00B7 ${t.time}`;
-    const status = t.done ? '[x]' : '[ ]';
-    return `${status} \u2014 ${t.task}${suffix}`;
-  });
-  return lines.join('\n');
-}
 
 function getTimeMinutes(todo: any): number | null {
   if (todo.time) {
@@ -114,7 +39,134 @@ function detectSameNoteConflicts(todos: any[]): { existing: any; new: any }[] {
   return conflicts;
 }
 
-async function handleNewTask(ctx: Context, text: string, chatId: number, userId: number) {
+function classifyIntentFast(text: string): { intent: 'complete' | 'reschedule' | 'what_done' | 'unknown'; taskDescription?: string; newTime?: string; newDate?: string } | null {
+  const lower = text.toLowerCase().trim();
+
+  // === COMPLETE ===
+  if (/^(?:i (?:just )?(?:finished|completed|done|did)|i['\u2019]?ve (?:just )?(?:finished|completed|done))/.test(lower)) {
+    const m = lower.match(/(?:finished|completed|done with|did|сделал|закончил|выполнил)\s+(.+)/);
+    return { intent: 'complete', taskDescription: m ? m[1].replace(/^(it|that|the|его|это|вс[её])\s*/i, '').trim() : '' };
+  }
+  if (/^(?:я |я\s+)?(сделал|закончил|выполнил)/.test(lower)) {
+    const m = lower.match(/(?:сделал|закончил|выполнил)\s+(.+)/);
+    return { intent: 'complete', taskDescription: m ? m[1].replace(/^(его|это|вс[её])\s*/i, '').trim() : '' };
+  }
+
+  // === RESCHEDULE ===
+  if (/(?:^|\s)(?:move|reschedule|change|shift)\s/.test(lower)) {
+    const m = text.match(/(?:move|reschedule|change|shift)\s+(.+?)\s+(?:to)\s+(.+)/i);
+    const taskDesc = m ? m[1].trim() : '';
+    const timeStr = m?.[2]?.trim();
+    const tm = timeStr ? timeStr.match(/(\d{1,2}):(\d{2})/) : null;
+    return { intent: 'reschedule', taskDescription: taskDesc, newTime: tm ? `${tm[1].padStart(2, '0')}:${tm[2]}` : timeStr };
+  }
+  if (/(перенес(?:ти|и)|передвинь|измени)\s/.test(lower)) {
+    // Try "с X на Y" pattern first (from X to Y)
+    let m = text.match(/(?:перенес[ти]?|передвинь|измени)\s+(.+?)\s+с\s+(.+?)\s+на\s+(.+)/i);
+    if (m) {
+      const taskDesc = m[1].trim();
+      const timeStr = m[3]?.trim();
+      const tm = timeStr ? timeStr.match(/(\d{1,2}):(\d{2})/) : null;
+      return { intent: 'reschedule', taskDescription: taskDesc, newTime: tm ? `${tm[1].padStart(2, '0')}:${tm[2]}` : timeStr || m[2]?.trim() };
+    }
+    // Fallback: try "X на Y" pattern
+    m = text.match(/(?:перенес[ти]?|передвинь|измени)\s+(.+?)\s+на\s+(.+)/i);
+    const taskDesc = m ? m[1].trim() : '';
+    const timeStr = m?.[2]?.trim();
+    const tm = timeStr ? timeStr.match(/(\d{1,2}):(\d{2})/) : null;
+    return { intent: 'reschedule', taskDescription: taskDesc, newTime: tm ? `${tm[1].padStart(2, '0')}:${tm[2]}` : timeStr };
+  }
+
+  // === WHAT_DONE ===
+  if (/(?:what did i do|what have i|how was my)/.test(lower)) return { intent: 'what_done' };
+  if (/(что (?:я сделал|я сегодня|делал|было|завершил))/.test(lower)) return { intent: 'what_done' };
+
+  // === UNKNOWN (greetings etc) ===
+  if (/^(?:hello|hi|hey|good morning|good evening|good afternoon|привет|здравствуй|здравствуйте|салем|salem)\b/.test(lower)) return { intent: 'unknown' };
+
+  return null; // fall through to AI analysis
+}
+
+export async function handleTextMessage(ctx: Context, text: string) {
+  const chatId = ctx.chat?.id;
+  const userId = ctx.from?.id;
+  if (!chatId || !userId) return;
+
+  // Fast path: classifyIntentFast only handles deterministic regex commands
+  const fast = classifyIntentFast(text);
+  if (fast) {
+    const lang = getPlan(chatId)?.language || 'ru';
+
+    switch (fast.intent) {
+      case 'complete': {
+        const desc = fast.taskDescription;
+        if (!desc) {
+          await ctx.reply(lang === 'ru' ? 'Что ты закончил?' : 'What did you finish?');
+          return;
+        }
+        const task = findTaskByDescription(chatId, desc);
+        if (!task) {
+          await ctx.reply(
+            lang === 'ru'
+              ? `Не найден задача "${desc}". Уточните описание.`
+              : `Could not find task "${desc}". Use your exact task description.`
+          );
+          return;
+        }
+        completeTask(chatId, task.id, true);
+        await ctx.reply(
+          lang === 'ru' ? `Выполнено:\n\u2014 ${task.task}`
+          : `Completed:\n\u2014 ${task.task}`
+        );
+        return;
+      }
+
+      case 'reschedule': {
+        const desc = fast.taskDescription;
+        if (!desc || !fast.newTime) {
+          await ctx.reply(lang === 'ru' ? 'Какую задачу и когда?' : 'Which task and what time?');
+          return;
+        }
+        const task = findTaskByDescription(chatId, desc);
+        if (!task) {
+          await ctx.reply(lang === 'ru' ? 'Не найдена такая задача.' : 'Could not find a matching task.');
+          return;
+        }
+        rescheduleTask(chatId, task.id, fast.newTime, fast.newDate);
+        const timeStr = fast.newTime + (fast.newDate ? ` на ${fast.newDate}` : '');
+        await ctx.reply(
+          lang === 'ru' ? `Перенесено:\n\u2014 ${task.task} \u00B7 ${timeStr}`
+          : `Rescheduled:\n\u2014 ${task.task} \u00B7 ${timeStr}`
+        );
+        return;
+      }
+
+      case 'what_done': {
+        const completed = getCompletedTasksToday(userId);
+        if (completed.length === 0) {
+          await ctx.reply(
+            lang === 'ru' ? 'Вы сегодня ещё ничего не завершили.'
+            : lang === 'kk' ? 'Сіз бүгін әлі ештеңе аяқтаған жоқсыз.'
+            : 'You haven\'t completed anything today.'
+          );
+          return;
+        }
+        const lines = completed.map((t: any) => `\u2014 ${t.task}`);
+        const header = lang === 'ru' ? 'ЗАВЕРШЕНО СЕГОДНЯ'
+          : lang === 'kk' ? 'БҮГІН АЯҚТАЛДЫ'
+          : 'COMPLETED TODAY';
+        await ctx.reply(`${header}\n\n${lines.join('\n')}`);
+        return;
+      }
+
+      case 'unknown': {
+        await ctx.reply(lang === 'ru' ? 'Отправьте голосовое сообщение.' : 'Send a voice message.');
+        return;
+      }
+    }
+  }
+
+  // For everything else (query or new_task), use AI analysis
   const statusMsg = await ctx.reply('Analyzing...');
   let analysis;
   try {
@@ -125,6 +177,97 @@ async function handleNewTask(ctx: Context, text: string, chatId: number, userId:
     return;
   }
 
+  // Handle social intent — greet/thanks, no saving
+  if (analysis.intent === 'social') {
+    const lang = analysis.language || 'ru';
+    const msg = lang === 'ru' ? 'Понял.'
+      : lang === 'kk' ? 'Түсінікті.'
+      : 'Got it.';
+    await ctx.api.editMessageText(chatId, statusMsg.message_id, msg);
+    return;
+  }
+
+  // Handle reschedule intent — don't save, reply with usage hint
+  if (analysis.intent === 'reschedule') {
+    const lang = analysis.language || 'ru';
+    const msg = lang === 'ru' ? 'Чтобы перенести задачу, напишите: "перенеси [задача] на [время]"'
+      : lang === 'kk' ? 'Тапсырманы ауыстыру үшін: "перенеси [тапсырма] на [уақыт]" деп жазыңыз'
+      : 'To reschedule a task, write: "move [task] to [time]"';
+    await ctx.api.editMessageText(chatId, statusMsg.message_id, msg);
+    return;
+  }
+
+  // Handle query intent — show existing tasks for the requested date
+  if (analysis.intent === 'query') {
+    const date = analysis.query_date;
+    const plan = getPlan(chatId);
+    const lang = analysis.language || 'ru';
+
+    if (!plan || !plan.todos || plan.todos.length === 0) {
+      const msg = date
+        ? (lang === 'ru' ? `На ${date} задач нет.`
+          : lang === 'kk' ? `${date} күніне тапсырмалар жоқ.`
+          : `Nothing planned for ${date}.`)
+        : (lang === 'ru' ? 'Нет активных задач.'
+          : lang === 'kk' ? 'Белсенді тапсырмалар жоқ.'
+          : 'No active tasks.');
+      await ctx.api.editMessageText(chatId, statusMsg.message_id, msg);
+      return;
+    }
+
+    const tasksOnDate = date
+      ? plan.todos.filter((t: any) => t.date === date && !t.done)
+      : plan.todos.filter((t: any) => !t.done);
+
+    if (tasksOnDate.length === 0) {
+      const msg = date
+        ? (lang === 'ru' ? `На ${date} задач нет.`
+          : lang === 'kk' ? `${date} күніне тапсырмалар жоқ.`
+          : `Nothing planned for ${date}.`)
+        : (lang === 'ru' ? 'Нет активных задач.'
+          : lang === 'kk' ? 'Белсенді тапсырмалар жоқ.'
+          : 'No active tasks.');
+      await ctx.api.editMessageText(chatId, statusMsg.message_id, msg);
+      return;
+    }
+
+    const lines = tasksOnDate.map((t: any) => {
+      let suffix = '';
+      if (t.time) suffix = ` \u00B7 ${t.time}`;
+      const priorityLabel = t.priority === 'high' ? 'High'
+        : t.priority === 'low' ? 'Low'
+        : 'Medium';
+      return `\u2014 ${t.task}${suffix} \u00B7 ${priorityLabel}`;
+    });
+
+    const header = date
+      ? `${date.toUpperCase()}`
+      : (lang === 'ru' ? 'АКТИВНЫЕ ЗАДАЧИ'
+        : lang === 'kk' ? 'БЕЛСЕНДІ ТАПСЫРМАЛАР'
+        : 'ACTIVE TASKS');
+
+    const footer = lang === 'ru'
+      ? `\n\n${tasksOnDate.length} ${tasksOnDate.length === 1 ? 'задача' : 'задач'}`
+      : lang === 'kk'
+      ? `\n\n${tasksOnDate.length} тапсырма`
+      : `\n\n${tasksOnDate.length} task${tasksOnDate.length === 1 ? '' : 's'}`;
+
+    await ctx.api.editMessageText(chatId, statusMsg.message_id, `${header}\n\n${lines.join('\n')}${footer}`);
+    return;
+  }
+
+  // Handle action (new task) — reuse pre-computed analysis
+  await handleNewTaskWithAnalysis(ctx, chatId, userId, statusMsg, analysis);
+}
+
+// Reusable new-task handler that accepts pre-computed analysis
+async function handleNewTaskWithAnalysis(
+  ctx: Context,
+  chatId: number,
+  userId: number,
+  statusMsg: { message_id: number },
+  analysis: any,
+) {
   const conflicts = detectTimeConflicts(userId, analysis.todos);
   const sameNoteConflicts = detectSameNoteConflicts(analysis.todos);
   for (const c of sameNoteConflicts) {
@@ -198,93 +341,4 @@ async function handleNewTask(ctx: Context, text: string, chatId: number, userId:
   const lines = analysis.todos.map((t: any) => `\u2014 ${t.task} \u00B7 ${t.priority}`);
   const txt = `${analysis.title}\n\n${analysis.summary}\n\n${lines.join('\n')}`;
   await ctx.reply(txt);
-}
-
-export async function handleTextMessage(ctx: Context, text: string) {
-  const chatId = ctx.chat?.id;
-  const userId = ctx.from?.id;
-  if (!chatId || !userId) return;
-
-  const info = await classifyIntent(text);
-  logger.info({ intent: info.intent, text: text.substring(0, 80) }, '[TextRouter]');
-
-  switch (info.intent) {
-    case 'query': {
-      const date = info.date;
-      const plan = getPlan(chatId);
-      if (!plan) {
-        await ctx.reply('You have no saved plans.');
-        return;
-      }
-      const tasksOnDate = date
-        ? plan.todos.filter(t => t.date === date)
-        : plan.todos;
-      const formatted = formatTodoList(tasksOnDate, plan.language);
-      const header = date ? `TASKS FOR ${date}` : 'ALL TASKS';
-      await ctx.reply(`${header}\n\n${formatted}`);
-      break;
-    }
-
-    case 'reschedule': {
-      const desc = info.taskDescription;
-      if (!desc || !info.newTime) {
-        await ctx.reply('Which task and what time?');
-        return;
-      }
-      const task = findTaskByDescription(chatId, desc);
-      if (!task) {
-        await ctx.reply('Could not find a matching task.');
-        return;
-      }
-      rescheduleTask(chatId, task.id, info.newTime, info.newDate);
-      const timeStr = info.newTime + (info.newDate ? ` on ${info.newDate}` : '');
-      await ctx.reply(`Rescheduled:\n\u2014 ${task.task} \u00B7 ${timeStr}`);
-      break;
-    }
-
-    case 'new_task': {
-      await handleNewTask(ctx, text, chatId, userId);
-      break;
-    }
-
-    case 'complete': {
-      const desc = info.taskDescription;
-      if (!desc) {
-        await ctx.reply('What did you finish?');
-        return;
-      }
-      const task = findTaskByDescription(chatId, desc);
-      if (!task) {
-        await ctx.reply(`Could not find task "${desc}". Use your exact task description.`);
-        return;
-      }
-      completeTask(chatId, task.id, true);
-      await ctx.reply(`Completed:\n\u2014 ${task.task}`);
-      break;
-    }
-
-    case 'what_done': {
-      const completed = getCompletedTasksToday(userId);
-      const plan = getPlan(chatId);
-      const lang = plan?.language || 'en';
-      if (completed.length === 0) {
-        const msg = lang === 'ru' ? 'Вы сегодня ещё ничего не завершили.'
-          : lang === 'kk' ? 'Сіз бүгін әлі ештеңе аяқтаған жоқсыз.'
-          : 'You haven\'t completed anything today.';
-        await ctx.reply(msg);
-        return;
-      }
-      const lines = completed.map((t: any) => `\u2014 ${t.task}`);
-      const header = lang === 'ru' ? 'ЗАВЕРШЕНО СЕГОДНЯ'
-        : lang === 'kk' ? 'БҮГІН АЯҚТАЛДЫ'
-        : 'COMPLETED TODAY';
-      await ctx.reply(`${header}\n\n${lines.join('\n')}`);
-      break;
-    }
-
-    default: {
-      await ctx.reply('Send a voice message.');
-      break;
-    }
-  }
 }

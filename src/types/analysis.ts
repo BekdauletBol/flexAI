@@ -11,6 +11,7 @@ export interface TodoItem {
 }
 
 export interface AnalysisResult {
+  intent: 'query' | 'action' | 'social' | 'reschedule';
   title: string;
   summary: string;
   key_points: string[];
@@ -22,4 +23,5 @@ export interface AnalysisResult {
   visit_datetime?: string;
   needs_location_check?: boolean;
   user_city?: string;
+  query_date?: string;
 }

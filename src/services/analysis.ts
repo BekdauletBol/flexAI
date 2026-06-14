@@ -11,59 +11,87 @@ const openai = new OpenAI({
   maxRetries: 0,
 });
 
-const SYSTEM_PROMPT = `You are an expert assistant for analyzing voice notes.
+const SYSTEM_PROMPT = `You are an expert assistant for analyzing voice notes and messages.
+
+INTENT DETECTION (check this FIRST, in this order):
+- "social": user is saying hello, thank you, okay, bye, or any phrase with no tasks or questions.
+  Examples: "спасибо", "окей", "привет", "thanks", "got it", "👍", "ok", "понял", "хорошо"
+- "reschedule": user wants to MOVE a task to a different time or date. Do NOT extract as tasks.
+  Examples: "перенеси задач на 13 июня", "move my 3pm meeting to 4pm", "сдвинь купить билеты на 9:05", "перенести на завтра"
+- "query": user is ASKING about existing plans, tasks, or schedule
+  Examples: "What do I have tomorrow?", "Какие у меня планы на завтра?", "Am I free on Friday?"
+- "action": user is STATING a new task, plan, or idea
+  Examples: "Buy groceries today at 6pm", "Нужно купить продукты", "Meeting with the team at 3pm"
+- Default to "action" if unclear.
+
+When "intent" is "social":
+- Set "todos" to empty array []
+- Set "title" to empty string
+- Set "summary" to empty string
+- Set "key_points" to empty array
+- Set "tags" to empty array
+- Set "query_date" to null
+
+When "intent" is "reschedule":
+- Set "todos" to empty array []
+- Set "title" to empty string
+- Set "summary" to empty string
+- Set "key_points" to empty array
+- Set "tags" to empty array
+- Set "query_date" to null
+
+When "intent" is "query":
+- Set "todos" to empty array []
+- Set "query_date" to the date being asked about (YYYY-MM-DD, resolved from relative dates)
+- Set "title", "summary", "key_points", "tags" to minimal values
+- Do NOT extract any tasks or create any TODO items
+
+When "intent" is "action":
+- Extract all tasks normally into "todos"
+- Set "query_date" to null
 
 LANGUAGE RULE (CRITICAL — you MUST write all output in the detected language):
-- If any Russian text is present → write ALL text (title, summary, key_points, task descriptions) in Russian. Set "language": "ru".
+- If any Russian text is present → write ALL text in Russian. Set "language": "ru".
 - If any Kazakh text is present → write ALL text in Kazakh. Set "language": "kk".
-- Only write in English if the transcript is 100% English. Set "language": "en".
-- Example mixed input: "Today at 3pm call with the client. Вечером купить продукты." → Russian output, "language": "ru"
-- The "language" field and the written language MUST match — no exceptions.
+- Only write in English if 100% English. Set "language": "en".
+- Example: "Today at 3pm call with the client. Вечером купить продукты." → Russian output, "language": "ru"
 
 Return ONLY a JSON object in this EXACT format:
 {
-  "title": "Short title (5-7 words)",
-  "summary": "2-3 sentence summary",
-  "key_points": ["point 1", "point 2"],
-  "todos": [
-    { "task": "Task description", "priority": "high", "done": false, "time": "15:00", "datetime": "2026-06-15T15:00:00", "date": "2026-06-15", "duration": 30, "location": "Place name or null" }
-  ],
-  "tags": ["#tag1", "#tag2"],
-  "raw_transcript": "original transcript unchanged",
+  "intent": "query" or "action" or "social" or "reschedule",
+  "query_date": "YYYY-MM-DD or null",
+  "title": "Short title or empty string",
+  "summary": "2-3 sentence summary or empty string",
+  "key_points": [],
+  "todos": [],
+  "tags": [],
+  "raw_transcript": "original text unchanged",
   "language": "ru",
-  "location_query": "ЦУМ Астана or null",
-  "visit_datetime": "2026-05-29T14:00:00 or null",
+  "location_query": null,
+  "visit_datetime": null,
   "needs_location_check": false,
-  "user_city": "Almaty or null — extract the city the user seems to be in"
+  "user_city": null
 }
 
-DATE & TIME EXTRACTION (CRITICAL):
-- The user may mention relative dates: "today", "tomorrow", "next week", "in a month", "next Friday", "в следующую пятницу", "через месяц", "послезавтра", "келесі аптада".
-- Resolve ALL relative dates using the CURRENT CONTEXT provided below into absolute ISO dates.
-- Set "datetime" as full ISO string: "2026-07-15T15:00:00".
-- Set "date" as "YYYY-MM-DD" for the calendar date.
-- Set "time" as "HH:MM" 24h format for display (if a specific time is mentioned).
-- If no date is mentioned → default to today.
-- If no time is mentioned → set "time" to null, "datetime" to just the date.
-- Examples:
-  - "next Friday 3pm" → time: "15:00", date: "2026-06-19", datetime: "2026-06-19T15:00:00"
-  - "in a month" → time: null, date: "2026-07-12", datetime: "2026-07-12T00:00:00"
-  - "today at 5pm" → time: "17:00", date: today, datetime: "2026-06-12T17:00:00"
-- "duration": estimated task duration in minutes (default 30).
+DATE & TIME EXTRACTION (for "action" intent):
+- Resolve relative dates using CURRENT CONTEXT into absolute ISO dates.
+- Set "datetime" as full ISO: "2026-07-15T15:00:00".
+- Set "date" as "YYYY-MM-DD".
+- Set "time" as "HH:MM" 24h.
+- If no date → default to today.
+- Examples: "next Friday 3pm" → time: "15:00", date: "2026-06-19", datetime: "2026-06-19T15:00:00"
+- "duration": default 30 minutes.
 
 LOCATION EXTRACTION:
 - If user mentions visiting a specific place + time, set location_query (place name), visit_datetime (ISO), needs_location_check: true.
-- If task mentions a place name, set "location" on that todo item.
-- If no place → set all location fields to null.
-- If the user mentions a city or area they are in or near ("I'm in Almaty", "around Astana", "в Алматы", "Астанада"), set user_city to that city name. Never ask the user to set their city — infer it from their speech.
-- CRITICAL: If the user asks to "check weather", "look up weather", "проверь погоду", "какая погода", "нужен ли зонт" etc. → set needs_location_check: true and location_query to the place, but do NOT create a "Check weather" task. The weather lookup is handled automatically.
-- Similarly, if the user says "look up a place", "find directions", "как добраться" → set needs_location_check: true. Do not create a task for it.
-- CRITICAL for user_city: "Астана" is a city in Kazakhstan. "Мега Астана" is a mall IN Astana. Do NOT confuse with Moscow or any Russian city. When the user says "Мега Астана", "Мега Алматы", "ТРЦ Астана" etc., these are malls in Kazakhstan.
+- If the user asks about weather → set needs_location_check: true, do NOT create a "Check weather" task.
+- "Астана" is a city in Kazakhstan, not Russia.
+- Infer user_city from speech, never ask to set city.
 
 Guidelines:
-- Be concise, action-oriented. Extract EVERY actionable item EXCEPT weather/location lookups.
-- Priority: "high"=urgent, "medium"=standard, "low"=nice-to-have.
-- Generate #tags. "language": "ru","en","kk". Keep raw_transcript unchanged.
+- "intent": "query" — only answer what date they're asking about, no task extraction
+- "intent": "action" — extract EVERY actionable item except weather/location lookups
+- Priority: "high"=urgent, "medium"=standard, "low"=nice-to-have
 - Return ONLY JSON.`;
 
 async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
@@ -108,11 +136,40 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
 
     const result = JSON.parse(content) as AnalysisResult;
     result.raw_transcript = transcript;
-    result.title = result.title || 'Voice Note';
-    result.summary = result.summary || transcript.substring(0, 200);
+    if (!['query', 'action', 'social', 'reschedule'].includes(result.intent)) result.intent = 'action';
+    result.query_date = result.intent === 'query' ? (result.query_date || undefined) : undefined;
+    const badTitles = ['short title (5-7 words)', 'short title', 'title'];
+    if (!result.title || badTitles.some(b => result.title.toLowerCase().includes(b))) {
+      result.title = result.intent === 'query' ? '' : result.intent === 'social' ? '' : result.intent === 'reschedule' ? '' : 'Voice Note';
+    }
+    result.summary = result.summary || (result.intent === 'query' || result.intent === 'social' || result.intent === 'reschedule' ? '' : transcript.substring(0, 200));
     result.key_points = result.key_points || [];
     result.todos = result.todos || [];
     result.tags = result.tags || [];
+
+    // Validate all todo dates are absolute ISO YYYY-MM-DD, never relative
+    result.todos = result.todos.map(todo => {
+      if (todo.date) {
+        const lower = todo.date.toLowerCase();
+        if (lower === 'today') {
+          todo.date = now.toISOString().split('T')[0];
+        } else if (lower === 'tomorrow') {
+          const tom = new Date(now);
+          tom.setDate(tom.getDate() + 1);
+          todo.date = tom.toISOString().split('T')[0];
+        } else if (!/^\d{4}-\d{2}-\d{2}$/.test(todo.date)) {
+          // If it's not YYYY-MM-DD, default to today
+          todo.date = now.toISOString().split('T')[0];
+        }
+      }
+      return todo;
+    });
+
+    // For non-action intents, skip todo processing
+    if (result.intent !== 'action') {
+      logger.info(`[Analysis] Intent=${result.intent}${result.intent === 'query' ? ` date=${result.query_date || 'none'}` : ''}`);
+      return result;
+    }
 
     const lang = result.language?.toLowerCase();
     if (lang === 'kk' || lang === 'kz') result.language = 'kk';
