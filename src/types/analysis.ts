@@ -3,9 +3,9 @@ export interface TodoItem {
   task: string;
   priority: 'high' | 'medium' | 'low';
   done: boolean;
-  time?: string;       // "HH:MM" for display
+  time?: string;       // "HH:MM" for display/24h
   datetime?: string;   // ISO datetime "2026-07-15T15:00:00" for scheduling
-  date?: string;       // "2026-07-15" for grouping
+  date?: string;       // "YYYY-MM-DD" for grouping/conflict detection
   duration?: number;   // minutes, default 30
   location?: string;
 }

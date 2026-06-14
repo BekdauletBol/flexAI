@@ -3,41 +3,12 @@ import { logger } from '../logger.js';
 import { analyzeTranscript } from './analysis.js';
 import { savePlan, detectTimeConflicts, completeTask, rescheduleTask, getPlan } from './planStore.js';
 import { findTaskByDescription, getCompletedTasksToday } from './db.js';
-import { setPendingReminderConfig, getPendingSession, getTaskKeyboard, getTaskMessage } from './reminderSession.js';
-import { setPendingPlan } from './pendingPlan.js';
-import { InlineKeyboard } from 'grammy';
-
-function getTimeMinutes(todo: any): number | null {
-  if (todo.time) {
-    const parts = todo.time.split(':');
-    if (parts.length === 2) return parseInt(parts[0]) * 60 + parseInt(parts[1]);
-  }
-  if (todo.datetime) {
-    const d = new Date(todo.datetime);
-    if (!isNaN(d.getTime())) return d.getHours() * 60 + d.getMinutes();
-  }
-  return null;
-}
-
-function detectSameNoteConflicts(todos: any[]): { existing: any; new: any }[] {
-  const conflicts: { existing: any; new: any }[] = [];
-  for (let i = 0; i < todos.length; i++) {
-    const a = todos[i];
-    const aStart = getTimeMinutes(a);
-    if (aStart === null) continue;
-    const aEnd = aStart + (a.duration || 30);
-    for (let j = i + 1; j < todos.length; j++) {
-      const b = todos[j];
-      const bStart = getTimeMinutes(b);
-      if (bStart === null) continue;
-      const bEnd = bStart + (b.duration || 30);
-      if (aStart < bEnd && aEnd > bStart) {
-        conflicts.push({ existing: a, new: b });
-      }
-    }
-  }
-  return conflicts;
-}
+import { getUserConfig } from './userConfig.js';
+import { savePending } from './pendingStore.js';
+import { startDeliveryFlow } from './delivery.js';
+import { buildConflictMessage, getConflictKeyboard, getNavKeyboard } from './messages.js';
+import { scheduleReminders } from './scheduler.js';
+import { AnalysisResult } from '../types/analysis.js';
 
 function classifyIntentFast(text: string): { intent: 'complete' | 'reschedule' | 'what_done' | 'unknown'; taskDescription?: string; newTime?: string; newDate?: string } | null {
   const lower = text.toLowerCase().trim();
@@ -115,8 +86,8 @@ export async function handleTextMessage(ctx: Context, text: string) {
         }
         completeTask(chatId, task.id, true);
         await ctx.reply(
-          lang === 'ru' ? `Выполнено:\n\u2014 ${task.task}`
-          : `Completed:\n\u2014 ${task.task}`
+          lang === 'ru' ? `Выполнено:\n— ${task.task}`
+          : `Completed:\n— ${task.task}`
         );
         return;
       }
@@ -135,8 +106,8 @@ export async function handleTextMessage(ctx: Context, text: string) {
         rescheduleTask(chatId, task.id, fast.newTime, fast.newDate);
         const timeStr = fast.newTime + (fast.newDate ? ` на ${fast.newDate}` : '');
         await ctx.reply(
-          lang === 'ru' ? `Перенесено:\n\u2014 ${task.task} \u00B7 ${timeStr}`
-          : `Rescheduled:\n\u2014 ${task.task} \u00B7 ${timeStr}`
+          lang === 'ru' ? `Перенесено:\n— ${task.task} · ${timeStr}`
+          : `Rescheduled:\n— ${task.task} · ${timeStr}`
         );
         return;
       }
@@ -151,7 +122,7 @@ export async function handleTextMessage(ctx: Context, text: string) {
           );
           return;
         }
-        const lines = completed.map((t: any) => `\u2014 ${t.task}`);
+        const lines = completed.map((t: any) => `— ${t.task}`);
         const header = lang === 'ru' ? 'ЗАВЕРШЕНО СЕГОДНЯ'
           : lang === 'kk' ? 'БҮГІН АЯҚТАЛДЫ'
           : 'COMPLETED TODAY';
@@ -168,7 +139,7 @@ export async function handleTextMessage(ctx: Context, text: string) {
 
   // For everything else (query or new_task), use AI analysis
   const statusMsg = await ctx.reply('Analyzing...');
-  let analysis;
+  let analysis: AnalysisResult;
   try {
     analysis = await analyzeTranscript(text);
   } catch (e) {
@@ -233,11 +204,9 @@ export async function handleTextMessage(ctx: Context, text: string) {
 
     const lines = tasksOnDate.map((t: any) => {
       let suffix = '';
-      if (t.time) suffix = ` \u00B7 ${t.time}`;
-      const priorityLabel = t.priority === 'high' ? 'High'
-        : t.priority === 'low' ? 'Low'
-        : 'Medium';
-      return `\u2014 ${t.task}${suffix} \u00B7 ${priorityLabel}`;
+      if (t.time) suffix = ` · ${t.time}`;
+      const priorityLabel = t.priority.toUpperCase();
+      return `— ${t.task}${suffix} · ${priorityLabel}`;
     });
 
     const header = date
@@ -256,89 +225,35 @@ export async function handleTextMessage(ctx: Context, text: string) {
     return;
   }
 
-  // Handle action (new task) — reuse pre-computed analysis
-  await handleNewTaskWithAnalysis(ctx, chatId, userId, statusMsg, analysis);
-}
-
-// Reusable new-task handler that accepts pre-computed analysis
-async function handleNewTaskWithAnalysis(
-  ctx: Context,
-  chatId: number,
-  userId: number,
-  statusMsg: { message_id: number },
-  analysis: any,
-) {
+  // Handle action (new task)
   const conflicts = detectTimeConflicts(userId, analysis.todos);
-  const sameNoteConflicts = detectSameNoteConflicts(analysis.todos);
-  for (const c of sameNoteConflicts) {
-    if (!conflicts.some(ex => ex.new.id === c.new.id)) {
-      conflicts.push(c);
-    }
-  }
+  
+  const pendingData = {
+    userId,
+    chatId,
+    analysis,
+    conflicts,
+    phase: conflicts.length > 0 ? 'conflict' as const : 'reminder' as const,
+    resolvedTodos: analysis.todos,
+    reminderIndex: 0
+  };
+  
+  const pendingId = savePending(pendingData);
 
   if (conflicts.length > 0) {
-    setPendingPlan(chatId, {
-      chatId,
-      userId,
-      analysis,
-      statusMsgId: statusMsg.message_id,
-      step: 'conflicts',
-      totalConflicts: conflicts.length,
-      resolvedConflicts: new Set(),
-    });
-
-    for (const c of conflicts) {
-      const exHour = parseInt(c.existing.time!.split(':')[0]);
-      const exMin = parseInt(c.existing.time!.split(':')[1]);
-      const exDuration = c.existing.duration || 30;
-      const totalMin = exHour * 60 + exMin + exDuration + 15;
-      const suggestH = Math.floor(totalMin / 60) % 24;
-      const suggestM = totalMin % 60;
-      const newTime = `${String(suggestH).padStart(2, '0')}:${String(suggestM).padStart(2, '0')}`;
-
-      const kb = new InlineKeyboard()
-        .text('Keep both', `cf_keep_${c.new.id}`)
-        .text('Skip new', `cf_skip_${c.new.id}`)
-        .text(`+15min`, `cf_move_${c.new.id}_${newTime}`)
-        .text('Custom', `cf_custom_${c.new.id}`);
-
-      await ctx.reply(
-        `CONFLICT\n\n\u2014 ${c.existing.task} \u00B7 ${c.existing.time}\n\u2014 ${c.new.task} \u00B7 ${c.new.time}`,
-        { reply_markup: kb }
-      );
-    }
-    return;
+    const conflictMsg = buildConflictMessage(conflicts, analysis.language);
+    const keyboard = getConflictKeyboard(pendingId, analysis.language);
+    await ctx.api.editMessageText(chatId, statusMsg.message_id, conflictMsg, { reply_markup: keyboard });
+    return; 
   }
+
+  try { await ctx.api.deleteMessage(chatId, statusMsg.message_id); } catch {}
 
   savePlan(chatId, userId, analysis);
-
-  const timedTasks = analysis.todos.filter((t: any) => t.time || t.datetime);
-  const tasksWithTime = timedTasks.filter((t: any) => t.time);
-
-  if (tasksWithTime.length > 0) {
-    setPendingPlan(chatId, {
-      chatId,
-      userId,
-      analysis,
-      statusMsgId: statusMsg.message_id,
-      step: 'reminders',
-      totalConflicts: 0,
-      resolvedConflicts: new Set(),
-    });
-
-    setPendingReminderConfig(chatId, userId, analysis.todos, analysis.language);
-    const session = getPendingSession(chatId);
-    if (session) {
-      const msg = await ctx.reply(getTaskMessage(session), {
-        reply_markup: getTaskKeyboard(session.currentTaskIndex, session.tasks.length),
-      });
-      session.messageId = msg.message_id;
-    }
-    return;
+  const timedTasks = analysis.todos.filter(t => t.time);
+  if (timedTasks.length > 0) {
+    scheduleReminders(chatId, userId, analysis.todos, analysis.language);
   }
 
-  // deliver text summary
-  const lines = analysis.todos.map((t: any) => `\u2014 ${t.task} \u00B7 ${t.priority}`);
-  const txt = `${analysis.title}\n\n${analysis.summary}\n\n${lines.join('\n')}`;
-  await ctx.reply(txt);
+  await startDeliveryFlow(ctx, { ...pendingData, id: pendingId, createdAt: Date.now() });
 }

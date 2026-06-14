@@ -60,12 +60,14 @@ Return ONLY a JSON object in this EXACT format:
 {
   "intent": "query" or "action" or "social" or "reschedule",
   "query_date": "YYYY-MM-DD or null",
-  "title": "Short title or empty string",
-  "summary": "2-3 sentence summary or empty string",
-  "key_points": [],
-  "todos": [],
-  "tags": [],
-  "raw_transcript": "original text unchanged",
+  "title": "Short title (5-7 words)",
+  "summary": "2-3 sentence summary",
+  "key_points": ["point 1", "point 2"],
+  "todos": [
+    { "task": "Task description", "priority": "high", "done": false, "time": "15:00", "date": "2026-05-29", "duration": 30, "location": "Place name or null" }
+  ],
+  "tags": ["#tag1", "#tag2"],
+  "raw_transcript": "original transcript unchanged",
   "language": "ru",
   "location_query": null,
   "visit_datetime": null,
@@ -82,6 +84,17 @@ DATE & TIME EXTRACTION (for "action" intent):
 - Examples: "next Friday 3pm" → time: "15:00", date: "2026-06-19", datetime: "2026-06-19T15:00:00"
 - "duration": default 30 minutes.
 
+DATE EXTRACTION:
+- If the user mentions a date, extract as "date" in "YYYY-MM-DD" format using the current date context below.
+- "today" → today's date, "tomorrow" → tomorrow's date, "next Friday" → resolve to absolute ISO date.
+- If no date mentioned → set "date" to null.
+
+PRIORITY RULES (apply strictly):
+- "high": "срочно", "обязательно", "до [date]", "urgent", "asap", "must", "важно", "маңызды", "шұғыл"
+- "medium": "хочу", "планирую", "надо бы", "want to", "planning to", "need to", "керек"
+- "low": "возможно", "когда-нибудь", "maybe", "someday", "мүмкін", "бір кезде"
+- Default to "medium" when no clear signal.
+
 LOCATION EXTRACTION:
 - If user mentions visiting a specific place + time, set location_query (place name), visit_datetime (ISO), needs_location_check: true.
 - If the user asks about weather → set needs_location_check: true, do NOT create a "Check weather" task.
@@ -92,6 +105,8 @@ Guidelines:
 - "intent": "query" — only answer what date they're asking about, no task extraction
 - "intent": "action" — extract EVERY actionable item except weather/location lookups
 - Priority: "high"=urgent, "medium"=standard, "low"=nice-to-have
+- Be concise, action-oriented. Extract EVERY actionable item.
+- Generate #tags. "language": "ru","en","kk". Keep raw_transcript unchanged.
 - Return ONLY JSON.`;
 
 async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {

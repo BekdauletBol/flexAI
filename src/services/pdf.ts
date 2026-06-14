@@ -208,7 +208,7 @@ export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
 
         const pColor = todo.priority === 'high' ? RED : todo.priority === 'medium' ? AMBER : SLATE;
         const pLabel = todo.priority === 'high' ? labels.high : todo.priority === 'medium' ? labels.medium : labels.low;
-        const timeStr = todo.time ? `  ⏰ ${todo.time}` : '';
+        const timeStr = todo.time ? `  · ${todo.time}` : '';
 
         doc.save().rect(M, y - 1, CW, 18).fillOpacity(0.08).fill(WHITE).restore();
         doc.fillOpacity(1);

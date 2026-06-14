@@ -21,13 +21,24 @@ npm install
 npm run dev
 ```
 
-## Docker
+## Usage
 
-```bash
-docker compose up -d --build
-```
+1. Open the bot in Telegram.
+2. Send `/start` to begin.
+3. Record and send a voice message.
+4. Receive:
+   - 📎 PDF report with structured notes.
+   - 📝 Text summary in chat with tasks.
+   - 🔔 Reminders for tasks with specific times.
 
-Starts on port 3000 with healthcheck, auto-restart, persistent volume.
+## Commands
+
+- `/start` — welcome message & navigation
+- `/report` — view all current tasks (AI-powered report)
+- `/weekly` — summary of the past 7 days
+- `/clear` — archive (mark done) all completed tasks
+- `/language` — switch language
+- `/help` — usage info
 
 ## Configuration
 
@@ -42,6 +53,13 @@ Starts on port 3000 with healthcheck, auto-restart, persistent volume.
 | WEBAPP_URL | no | Telegram Mini App public URL |
 | LOG_LEVEL | no | `info` (default), `debug`, `trace` |
 
+## Docker
+
+```bash
+docker compose up -d --build
+```
+Starts on port 3000 with healthcheck, auto-restart, persistent volume.
+
 ## Production Checklist
 
 - Set `WEBHOOK_DOMAIN` to your HTTPS URL (required for Telegram webhook)
@@ -49,13 +67,6 @@ Starts on port 3000 with healthcheck, auto-restart, persistent volume.
 - Monitor via healthcheck: `GET /health`
 - Logs via `docker compose logs -f`
 - DB volume persists across restarts
-
-## Commands
-
-`/start` — welcome message
-`/language` — switch language
-`/report` — full task report
-`/help` — usage info
 
 ## Architecture
 
