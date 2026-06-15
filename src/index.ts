@@ -912,7 +912,7 @@ bot.callbackQuery(/^img_cancel_(.+)$/, async (ctx) => {
   const msg = lang === 'ru' ? 'Отменено.' : lang === 'kk' ? 'Болдырылмады.' : 'Cancelled.';
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch {}
   }
 });
 
@@ -1119,6 +1119,9 @@ try {
 }
 
 initScheduler(bot);
+
+console.log('[DB] Users:', db.prepare('SELECT COUNT(*) as c FROM users').get());
+console.log('[DB] Todos:', db.prepare('SELECT COUNT(*) as c FROM todos').get());
 
 const app = createServer();
 app.listen(config.port, '0.0.0.0', () => {
