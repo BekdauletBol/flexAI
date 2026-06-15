@@ -198,7 +198,7 @@ export async function extractViewInfo(transcript: string): Promise<ViewExtractio
     if (!content) return null;
     return JSON.parse(content) as ViewExtraction;
   } catch (error) {
-    console.error('[Intent] View extraction failed:', err);
+    console.error('[Intent] View extraction failed:', error);
     return null;
   }
 }
@@ -208,7 +208,8 @@ export async function extractMemoryUpdate(transcript: string, currentMemory: str
     const response = await withTimeout(openai.chat.completions.create({
       model: config.openaiModel,
       messages: [
-        { role: 'system', content: `You update the user's long-term memory based on their messages. Current memory: ${currentMemory}
+        {
+          role: 'system', content: `You update the user's long-term memory based on their messages. Current memory: ${currentMemory}
 
 Return ONLY JSON: { "should_update": boolean, "memory_update": { "habits": string[], "projects": string[], "preferences": Record<string,string>, "important_dates": string[], "patterns": Record<string,string>, "places": string[] } }
 
