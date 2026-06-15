@@ -32,104 +32,22 @@ export interface IntentResult {
   command_arg?: string;
 }
 
-const SYSTEM_PROMPT = `You are a routing assistant for a personal secretary bot.
+const SYSTEM_PROMPT = `Classify the user's message into ONE intent.
 
-Your job: classify the user's voice transcript into exactly ONE intent.
+RULE 1 — Default is "action". Use action unless the message clearly matches another intent.
 
-INTENTS:
+RULE 2 — Use "delete" ONLY if message contains: удали, убери, отмени, удалить, убрать, отменить, delete, remove, cancel
 
-"action" — user is dictating new tasks, plans, or reminders to save.
-Examples:
-- "завтра в 9 утра встреча с командой"
-- "напомни мне купить молоко"
-- "запланируй тренировку на пятницу в 7 утра"
-- "на следующей неделе нужно сдать отчёт"
+RULE 3 — Use "reschedule" ONLY if message contains: перенеси, передвинь, сдвинь, перенести, reschedule, move
 
-"query" — user is asking about their existing schedule.
-Examples:
-- "какие у меня планы на завтра"
-- "что у меня есть на этой неделе"
-- "есть ли у меня что-то в пятницу"
-- "покажи мои задачи на сегодня"
-- "what do I have tomorrow"
+RULE 4 — Use "query" ONLY if message is a question about existing tasks: какие планы, что у меня, когда у меня, what do I have
 
-"reschedule" — user wants to move an existing task to a different time or date.
-Examples:
-- "перенеси встречу с командой на пятницу"
-- "сдвинь тренировку на час позже"
-- "перенеси дантиста на следующую неделю"
-- "move the dentist appointment to 3pm"
-- "передвинь встречу"
-
-"delete" — user wants to remove a task.
-Examples:
-- "удали встречу с командой"
-- "отмени ужин сегодня вечером"
-- "убери задачу купить билеты"
-- "cancel the dentist appointment"
-
-CRITICAL RULE:
-If the user says "убери", "удали", "отмени", "убрать", "удалить", "remove", "delete", "cancel" + a task name → intent is ALWAYS "delete".
-NEVER create a new task from a delete request.
-Even if the sentence is complex: "убери задачу X после того как Y" → delete intent, target_task: "X"
-
-"complete" — user is saying they finished something.
-Examples:
-- "я выполнил задачу купить билеты"
-- "встреча с командой прошла"
-- "отметь тренировку как выполненную"
-- "done with the report"
-
-"report" — user wants to see their task list or a PDF report.
-Examples:
-- "покажи мой отчёт"
-- "скинь пдф с задачами"
-- "дай недельный отчёт"
-- "show my report"
-- "weekly report"
-- "все мои задачи"
-- "скинь задачи только до 17:00" → report, target_time: "17:00"
-- "отчёт только на утро" → report, target_time: "12:00"
-- "покажи только высокий приоритет" → report, priority_filter: "high"
-- "задачи только на сегодня" → report, target_date: today
-
-"clear" — user wants to delete completed tasks.
-Examples:
-- "очисти выполненные"
-- "удали всё что сделано"
-- "clear done tasks"
-
-"summary" — user wants a quick stats overview.
-Examples:
-- "сколько у меня задач"
-- "как мои дела на этой неделе"
-- "how many tasks do I have"
-
-"social" — greeting, thanks, small talk, no actionable request.
-Examples:
-- "привет"
-- "спасибо"
-- "окей"
-- "как дела"
-
-RULES:
-- If the user says "передвинь X" or "перенеси X" → ALWAYS "reschedule", never "action"
-- If the user asks a question about their schedule → ALWAYS "query", never "action"  
-- If the user says they completed/finished something → ALWAYS "complete", never "action"
-- Default to "action" ONLY when user is clearly dictating new plans
-- When in doubt between "action" and another intent → choose the other intent
+RULE 5 — If message describes new tasks, times, or plans → "action". Always.
 
 Return ONLY this JSON:
 {
   "intent": "action|query|reschedule|delete|complete|report|clear|summary|social",
-  "confidence": 0.0-1.0,
-  "target_task": "task name mentioned, or null",
-  "target_date": "YYYY-MM-DD or relative word like tomorrow/friday, or null",
-  "target_time": "HH:MM or null",
-  "after_time": "HH:MM filter for tasks after this time, or null",
-  "priority_filter": "high|medium|low or null",
-  "period": "today|tomorrow|week|month|all or null",
-  "command_arg": "language code if language change, or null"
+  "confidence": 0.0-1.0
 }`;
 
 export async function detectIntent(transcript: string): Promise<IntentResult> {
@@ -280,7 +198,7 @@ export async function extractViewInfo(transcript: string): Promise<ViewExtractio
     if (!content) return null;
     return JSON.parse(content) as ViewExtraction;
   } catch (error) {
-    console.error('[Intent] View extraction failed:', error);
+    console.error('[Intent] View extraction failed:', err);
     return null;
   }
 }

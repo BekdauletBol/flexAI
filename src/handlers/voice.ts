@@ -97,6 +97,8 @@ export async function handleVoice(ctx: Context) {
     // 3. Intent detection
     try { await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Analyzing...'); } catch {}
     const intentResult = await detectIntent(transcript);
+    console.log('[DEBUG] Transcript:', transcript.substring(0, 150));
+    console.log('[DEBUG] Intent result:', JSON.stringify(intentResult));
     
     // Auto-update memory
     try {
