@@ -912,8 +912,9 @@ bot.callbackQuery(/^img_cancel_(.+)$/, async (ctx) => {
   const msg = lang === 'ru' ? 'Отменено.' : lang === 'kk' ? 'Болдырылмады.' : 'Cancelled.';
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
   }
+  await ctx.reply(msg);
 });
 
 // ─── Message handlers ─────────────────────────────────────────────────────────
