@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config.js';
-import { handleVoice } from './handlers/voice.js';
+import { handleVoice, handlePlanIntent, handleQuestionIntent, routeByIntent, continueFlow } from './handlers/voice.js';
+import { handleImage } from './handlers/image.js';
 import { initScheduler } from './services/scheduler.js';
 import { createServer } from './server.js';
 import { setUserLanguage, getUserConfig, setUserLocation, setReminderOffset } from './services/userConfig.js';
@@ -12,9 +13,11 @@ import { geocodeCity } from './services/location.js';
 import { generateReportPdf } from './services/pdf.js';
 
 import { getNavKeyboard, buildConflictMessage, buildCombinedConflictMessage, getCombinedConflictKeyboard, getSingleConflictKeyboard, buildRescheduleDatePicker, getRescheduleDateKeyboard, buildRescheduleTimePicker, getRescheduleTimeKeyboard, buildRescheduleConfirm } from './services/messages.js';
-import { getPending, deletePending, getUserFlowState, setUserFlowState, clearUserFlowState, setRescheduleState, getRescheduleState, clearRescheduleState } from './services/pendingStore.js';
+import { getPending, deletePending, getUserFlowState, setUserFlowState, clearUserFlowState, setRescheduleState, getRescheduleState, clearRescheduleState, getUserState } from './services/pendingStore.js';
 import { startDeliveryFlow, advanceReminderLoop } from './services/delivery.js';
-import { scheduleReminders, cancelReminderByTaskId } from './services/scheduler.js';
+import { scheduleReminders, cancelReminderByTaskId, snoozeReminder, snoozeReminderUntilMorning } from './services/scheduler.js';
+import { detectIntent } from './services/intent.js';
+import { db } from './services/db.js';
 
 const bot = new Bot(config.telegramToken);
 
@@ -146,6 +149,11 @@ bot.command('ping', async (ctx) => {
 
 bot.command('start', async (ctx) => {
   const lang = getLang(ctx.from!.id);
+  // Ensure user exists in DB before any task operations
+  db.prepare(`
+    INSERT OR IGNORE INTO users (user_id, language)
+    VALUES (?, 'ru')
+  `).run(ctx.from!.id);
   // Remove any lingering reply keyboard (e.g. old "Share Location" button)
   const navKeyboard = getNavKeyboard(lang);
   await ctx.reply(i18n[lang].start, { reply_markup: navKeyboard });
@@ -196,7 +204,7 @@ bot.command('report', async (ctx) => {
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
   } catch (err) {
     console.error('[Bot] Report generation failed:', err);
-    const report = generateFullReport(tasks, lang);
+    const report = await generateFullReport(tasks, lang);
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, { reply_markup: getNavKeyboard(lang) });
   }
 });
@@ -302,7 +310,7 @@ bot.callbackQuery('nav_report', async (ctx) => {
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
   } catch (err) {
     console.error('[Bot] Report generation failed:', err);
-    const report = generateFullReport(tasks, lang);
+    const report = await generateFullReport(tasks, lang);
     await ctx.reply(report, { reply_markup: getNavKeyboard(lang) });
   }
 });
@@ -331,16 +339,23 @@ bot.callbackQuery('nav_weekly', async (ctx) => {
   }
 });
 
-bot.callbackQuery('nav_clear', async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const userId = ctx.from.id;
-  const lang = getLang(userId);
+function handleClearCompleted(ctx: any, userId: number, lang: Lang) {
   const archived = archiveCompletedTasks(userId);
   if (archived === 0) {
-    await ctx.reply(i18n[lang].cleared_none, { reply_markup: getNavKeyboard(lang) });
+    ctx.reply(i18n[lang].cleared_none, { reply_markup: getNavKeyboard(lang) });
   } else {
-    await ctx.reply(i18n[lang].cleared(archived), { reply_markup: getNavKeyboard(lang) });
+    ctx.reply(i18n[lang].cleared(archived), { reply_markup: getNavKeyboard(lang) });
   }
+}
+
+bot.callbackQuery('nav_clear', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  handleClearCompleted(ctx, ctx.from.id, getLang(ctx.from.id));
+});
+
+bot.callbackQuery('menu_clear', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  handleClearCompleted(ctx, ctx.from.id, getLang(ctx.from.id));
 });
 
 bot.callbackQuery('nav_language', async (ctx) => {
@@ -612,6 +627,36 @@ bot.callbackQuery('rs_confirm', async (ctx) => {
 
   const { taskId, selectedDate, selectedTime, currentDate, currentTime, lang, pendingId, conflictIndex } = state;
 
+  // Bug 4: Check if new datetime is same as old datetime
+  if (selectedDate === currentDate && selectedTime === currentTime) {
+    const timeMsg = lang === 'ru' ? 'Это то же самое время. Выберите другое.'
+      : lang === 'kk' ? 'Бұл сол уақыт. Басқасын таңдаңыз.'
+      : 'This is the same time. Pick another.';
+    await ctx.editMessageText(timeMsg);
+    // Re-show date picker
+    const dateMsg = buildRescheduleDatePicker(state.taskName, lang);
+    const dateKb = getRescheduleDateKeyboard(lang);
+    await ctx.reply(dateMsg, { reply_markup: dateKb });
+    return;
+  }
+
+  // Check if new time conflicts with another task
+  const allUserTasks = getUserTasks(userId);
+  const otherTasks = allUserTasks.filter(t => t.id !== taskId && !t.done && t.time && t.date);
+  const conflict = otherTasks.find(t => t.time === selectedTime && t.date === selectedDate);
+  if (conflict) {
+    const conflictMsg = lang === 'ru'
+      ? `КОНФЛИКТ\n\nВ ${selectedTime} уже запланировано:\n— ${conflict.task}\n\nВыберите другое время.`
+      : lang === 'kk'
+      ? `ҚАЙШЫЛЫҚ\n\n${selectedTime} уақытында жоспарланған:\n— ${conflict.task}\n\nБасқа уақыт таңдаңыз.`
+      : `CONFLICT\n\nAt ${selectedTime} you already have:\n— ${conflict.task}\n\nPick a different time.`;
+    await ctx.editMessageText(conflictMsg);
+    const timeMsg = buildRescheduleTimePicker(state.taskName, selectedDate, lang);
+    const timeKb = getRescheduleTimeKeyboard(lang);
+    await ctx.reply(timeMsg, { reply_markup: timeKb });
+    return;
+  }
+
   clearRescheduleState(userId);
   clearUserFlowState(userId);
 
@@ -682,6 +727,27 @@ bot.callbackQuery(/^conflict_keep_(.+)$/, async (ctx) => {
 // Note: conflict_reschedule_ is handled above (single conflict) and
 // conflict_reschedule_idx_ is in the combined conflict section
 
+bot.callbackQuery(/^conflict_skip_(.+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  const skipTask = pending.conflicts[0].newTodo;
+  pending.analysis.todos = pending.analysis.todos.filter(t => t.id !== skipTask.id);
+  pending.resolvedTodos = pending.resolvedTodos.filter(t => t.id !== skipTask.id);
+
+  if (ctx.callbackQuery.message) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+  }
+
+  await startDeliveryFlow(ctx, pending);
+});
+
 bot.callbackQuery(/^srem_(10|30|60|none|custom)_(.+)$/, async (ctx) => {
   const action = ctx.match[1];
   const pendingId = ctx.match[2];
@@ -745,9 +811,116 @@ bot.callbackQuery(/^srem_(10|30|60|none|custom)_(.+)$/, async (ctx) => {
   await advanceReminderLoop(ctx, pending);
 });
 
+// ─── Snooze Callbacks ──────────────────────────────────────────────────────────
+
+bot.callbackQuery(/^snz_(\d+|tmrw|done)_(.+)$/, async (ctx) => {
+  const action = ctx.match[1];
+  const taskId = ctx.match[2];
+  const userId = ctx.from.id;
+  const lang = getLang(userId);
+  
+  await ctx.answerCallbackQuery();
+
+  if (action === 'done') {
+    const { markTaskDone } = await import('./services/planStore.js');
+    markTaskDone(userId, taskId);
+    const msg = lang === 'ru' ? 'Отмечено как выполненное.' : lang === 'kk' ? 'Орындалды деп белгіленді.' : 'Marked as done.';
+    if (ctx.callbackQuery.message) {
+      try { await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch {}
+    }
+    cancelReminderByTaskId(taskId);
+    return;
+  }
+
+  let minutes: number;
+  let snoozedUntilStr: string | null = null;
+
+  if (action === 'tmrw') {
+    const tomorrow9am = new Date();
+    tomorrow9am.setDate(tomorrow9am.getDate() + 1);
+    tomorrow9am.setHours(9, 0, 0, 0);
+    minutes = Math.round((tomorrow9am.getTime() - Date.now()) / 60000);
+    snoozedUntilStr = tomorrow9am.toISOString();
+  } else {
+    minutes = parseInt(action, 10);
+    snoozedUntilStr = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+  }
+
+  const reminder = action === 'tmrw'
+    ? snoozeReminderUntilMorning(taskId, lang)
+    : snoozeReminder(taskId, minutes);
+
+  if (!reminder) {
+    if (ctx.callbackQuery.message) {
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    }
+    return;
+  }
+
+  // Update DB
+  const { updateSnooze } = await import('./services/db.js');
+  updateSnooze(taskId, snoozedUntilStr);
+
+  const msg = action === 'tmrw'
+    ? (lang === 'ru' ? 'Напомню завтра в 09:00.' : lang === 'kk' ? 'Ертең 09:00-де еске саламын.' : 'I\'ll remind you tomorrow at 09:00.')
+    : (lang === 'ru' ? `Напомню через ${minutes} мин.` : lang === 'kk' ? `${minutes} миннен кейін еске саламын.` : `I\'ll remind you in ${minutes} min.`);
+
+  if (ctx.callbackQuery.message) {
+    try { await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch {}
+  }
+});
+
+// ─── Image Confirmation Callbacks ──────────────────────────────────────────────
+
+bot.callbackQuery(/^img_confirm_(.+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const { getPending, deletePending } = await import('./services/pendingStore.js');
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+  await ctx.answerCallbackQuery();
+
+  const lang = pending.analysis.language;
+  if (ctx.chat) {
+    savePlan(ctx.chat.id, pending.userId, pending.analysis);
+    const timedTasks = pending.analysis.todos.filter(t => t.time);
+    if (timedTasks.length > 0) {
+      scheduleReminders(ctx.chat.id, pending.userId, pending.analysis.todos, lang);
+    }
+  }
+
+  if (ctx.callbackQuery.message) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+  }
+
+  await startDeliveryFlow(ctx, pending);
+});
+
+bot.callbackQuery(/^img_cancel_(.+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const { getPending, deletePending } = await import('./services/pendingStore.js');
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery('Expired.');
+    return;
+  }
+  await ctx.answerCallbackQuery();
+
+  const lang = pending.analysis.language;
+  const msg = lang === 'ru' ? 'Отменено.' : lang === 'kk' ? 'Болдырылмады.' : 'Cancelled.';
+
+  if (ctx.callbackQuery.message) {
+    try { await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch {}
+  }
+});
+
 // ─── Message handlers ─────────────────────────────────────────────────────────
 
 bot.on('message:voice', handleVoice);
+
+bot.on('message:photo', handleImage);
 
 bot.on('message:audio', async (ctx) => {
   const lang = getLang(ctx.from?.id ?? 0);
@@ -894,8 +1067,27 @@ bot.on('message:text', async (ctx) => {
     }
   }
 
+  // UserState-based multi-step flows
+  const userState = getUserState(userId);
+  if (userState?.flow) {
+    const text = ctx.message.text;
+    const lang = getLang(userId);
+    await continueFlow(ctx, userId, userState, text, { message_id: 0 }, lang);
+    return;
+  }
+
+  // No active flow — route through same intent pipeline as voice
+  const text = ctx.message.text;
   const lang = getLang(userId);
-  await ctx.reply(i18n[lang].voice_only);
+  const statusMsgId = (await ctx.reply('Analyzing...')).message_id;
+  try {
+    const intentResult = await detectIntent(text);
+    await routeByIntent(intentResult, ctx, userId, text, { message_id: statusMsgId }, lang);
+  } catch (err) {
+    console.error('[Text] Intent routing failed:', err);
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsgId); } catch {}
+    await ctx.reply(i18n[lang].voice_only);
+  }
 });
 
 // ─── Error handling ───────────────────────────────────────────────────────────

@@ -5,48 +5,27 @@
     "preferences": {},
     "important_dates": [],
     "patterns": {
-      "wake_up": "08:00",
-      "breakfast": "10:00",
-      "leave_for_gym": "08:50",
-      "gym": "09:00-11:00",
-      "snack_after_gym": "11:00",
+      "wake_up": "08:30",
+      "breakfast": "",
+      "leave_for_gym": "",
+      "gym": "08:30",
+      "snack_after_gym": "",
       "football": "13:20",
-      "lunch": "16:00",
+      "lunch": "13:00",
       "snack": "16:00",
       "cleaning": "17:00",
       "bedtime": "22:00",
-      "work_start": "11:20",
-      "work_schedule": [
-        {
-          "task": "Абай",
-          "start": "11:20",
-          "end": "12:00"
-        },
-        {
-          "task": "Хасые",
-          "start": "12:00",
-          "end": "12:40"
-        },
-        {
-          "task": "Ворк",
-          "start": "12:40",
-          "end": "13:20"
-        },
-        {
-          "task": "Уто",
-          "start": "13:20",
-          "end": "14:00"
-        },
-        {
-          "task": "Айсэм",
-          "start": "14:00",
-          "end": "16:00"
-        }
-      ],
+      "work_start": "15:00",
+      "work_schedule": [],
       "bar_reminder": "19:30",
-      "leave_for_bar": "00:00"
+      "leave_for_bar": "00:00",
+      "cleaning_end": "20:00",
+      "work_on_flex": "",
+      "presentation": "",
+      "dinner": "21:00",
+      "music": "16:00"
     },
     "places": [],
-    "last_updated": "2026-06-14T14:44:00.458Z"
+    "last_updated": "2026-06-15T08:15:36.015Z"
   }
 }

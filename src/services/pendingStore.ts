@@ -19,9 +19,31 @@ const pendingNotes = new Map<string, PendingVoiceNote>();
 
 export type UserFlowState = 
   | { type: 'awaiting_reschedule'; pendingId: string; conflictIndex?: number; customField?: 'date' | 'time' }
-  | { type: 'awaiting_custom_reminder'; pendingId: string; taskIndex: number };
+  | { type: 'awaiting_custom_reminder'; pendingId: string; taskIndex: number }
+  | { type: 'awaiting_clarification'; transcript: string; chatId: number; statusMsgId: number };
 
 const userFlows = new Map<number, UserFlowState>();
+
+export interface UserState {
+  flow: 'reschedule' | 'delete' | 'picker' | null;
+  pendingTaskId?: string;
+  pendingTasks?: any[]; // using any[] or StoredPlan/TodoItem based on what's available
+  step?: string;
+}
+
+const userStates = new Map<number, UserState>();
+
+export function getUserState(userId: number): UserState | undefined {
+  return userStates.get(userId);
+}
+
+export function setUserState(userId: number, state: UserState) {
+  userStates.set(userId, state);
+}
+
+export function clearUserState(userId: number) {
+  userStates.delete(userId);
+}
 
 export function savePending(data: Omit<PendingVoiceNote, 'id' | 'createdAt'>): string {
   const id = uuidv4();

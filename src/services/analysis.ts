@@ -80,10 +80,20 @@ LOCATION EXTRACTION:
 - If task mentions a place name, set "location" on that todo item.
 - If no place → set all location fields to null.
 
+SUBTASK EXTRACTION:
+If the user describes multiple sub-items within one activity (e.g. "meetings: 11:20 Абай, 12:00 Хасые"), extract EACH as a separate todo with its own time.
+Do not collapse multiple named items into one task.
+Example input: "с 11.20 Абай, в 12 Хасые, в 12.40 Ворк"
+Example output:
+  { "task": "Встреча с Абай", "time": "11:20" }
+  { "task": "Встреча с Хасые", "time": "12:00" }
+  { "task": "Встреча с Ворк", "time": "12:40" }
+
 Guidelines:
 - Be concise, action-oriented. Extract EVERY actionable item.
 - Generate #tags. "language": "ru","en","kk". Keep raw_transcript unchanged.
-- Return ONLY JSON.`;
+- Return ONLY JSON.
+IMPORTANT: Extract ALL tasks mentioned, no matter how many. Do not stop early. If the user mentions 10 tasks, return all 10 in the todos array.`;
 
 export async function analyzeTranscript(transcript: string): Promise<AnalysisResult> {
   try {
@@ -113,9 +123,34 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
       result = JSON.parse(content) as AnalysisResult;
     } catch (err) {
       console.error('[Analysis] JSON Parse Error:', err);
-      console.error('[Analysis] Raw content:', content);
-      throw new Error(`TRANSCRIPT_FALLBACK:${transcript}`);
+      console.error('[Analysis] Raw content (first 2000 chars):', content?.substring(0, 2000));
+      // Retry with simplified prompt focused only on todos
+      try {
+        console.log('[Analysis] Retrying with simplified prompt...');
+        const retryResponse = await withTimeout(openai.chat.completions.create({
+          model: config.openaiModel,
+          messages: [
+            { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), duration (number, default 30). Extract EVERY task mentioned, do not skip any. Language: same as transcript.` + contextPrompt },
+            { role: 'user', content: transcript },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.3,
+          max_tokens: 4096,
+        }), 60000);
+        const retryContent = retryResponse.choices[0]?.message?.content;
+        if (retryContent) {
+          result = JSON.parse(retryContent) as AnalysisResult;
+          result.todos = result.todos || [];
+          console.log(`[Analysis] Retry succeeded: ${result.todos.length} todos`);
+        } else {
+          throw new Error('Empty retry response');
+        }
+      } catch (retryErr) {
+        console.error('[Analysis] Retry also failed:', retryErr);
+        throw new Error(`TRANSCRIPT_FALLBACK:${transcript}`);
+      }
     }
+    console.log(`[Analysis] Parsed ${result.todos.length} todos`);
     result.raw_transcript = transcript;
     result.title = result.title || 'Voice Note';
     result.summary = result.summary || transcript.substring(0, 200);

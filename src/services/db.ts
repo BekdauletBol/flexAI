@@ -44,13 +44,39 @@ db.exec(`
     duration INTEGER NOT NULL DEFAULT 30,
     location TEXT,
     completed_at TEXT,
+    snoozed_until TEXT,
     PRIMARY KEY (id),
     FOREIGN KEY (chat_id, user_id) REFERENCES plans(chat_id, user_id)
   );
 `);
 
-// Add completed_at column if table already exists
+// Add columns if tables already exist (safe migration)
 try { db.exec('ALTER TABLE todos ADD COLUMN completed_at TEXT'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN snoozed_until TEXT'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN plan_history_id INTEGER REFERENCES plan_history(id)'); } catch {}
+
+// Plan history table for accumulated plans (multiple per user)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS plan_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    title TEXT DEFAULT '',
+    summary TEXT DEFAULT '',
+    key_points TEXT DEFAULT '[]',
+    tags TEXT DEFAULT '[]',
+    language TEXT NOT NULL DEFAULT 'en',
+    timeframe TEXT DEFAULT 'day',
+    period_start TEXT,
+    period_end TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+// Add timeframe columns to plans if missing
+try { db.exec('ALTER TABLE plans ADD COLUMN timeframe TEXT DEFAULT \'day\''); } catch {}
+try { db.exec('ALTER TABLE plans ADD COLUMN period_start TEXT'); } catch {}
+try { db.exec('ALTER TABLE plans ADD COLUMN period_end TEXT'); } catch {}
 
 // Prepared statements — users
 const stmtGetUser = db.prepare('SELECT * FROM users WHERE user_id = ?');
@@ -81,14 +107,28 @@ const stmtUpsertPlan = db.prepare(`
 
 // Prepared statements — todos
 const stmtInsertTodo = db.prepare(`
-  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, plan_history_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtGetTodosByChat = db.prepare('SELECT * FROM todos WHERE chat_id = ?');
 const stmtGetTodosByUser = db.prepare('SELECT * FROM todos WHERE user_id = ?');
+const stmtGetTodosByPlanId = db.prepare('SELECT * FROM todos WHERE plan_history_id = ?');
 const stmtUpdateTodoDone = db.prepare("UPDATE todos SET done = ?, completed_at = CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END WHERE id = ? AND chat_id = ?");
 const stmtUpdateTodoTime = db.prepare("UPDATE todos SET time = ?, datetime = ?, date = ? WHERE id = ? AND chat_id = ?");
 const stmtDeletePlanTodos = db.prepare('DELETE FROM todos WHERE chat_id = ?');
+const stmtDeleteTodosByPlanId = db.prepare('DELETE FROM todos WHERE plan_history_id = ?');
+
+// Plan history prepared statements
+const stmtInsertPlanHistory = db.prepare(`
+  INSERT INTO plan_history (chat_id, user_id, title, summary, key_points, tags, language, timeframe, period_start, period_end)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const stmtGetPlanHistoryById = db.prepare('SELECT * FROM plan_history WHERE id = ?');
+const stmtGetPlanHistoriesByUser = db.prepare('SELECT * FROM plan_history WHERE user_id = ? ORDER BY created_at DESC');
+const stmtGetWeeklyPlanHistories = db.prepare("SELECT * FROM plan_history WHERE user_id = ? AND created_at >= datetime('now', '-7 days') ORDER BY created_at DESC");
+const stmtDeletePlanHistory = db.prepare('DELETE FROM plan_history WHERE id = ?');
+const stmtDeletePlanHistoriesByUser = db.prepare('DELETE FROM plan_history WHERE user_id = ?');
+const stmtDeletePlanHistoriesByDate = db.prepare("DELETE FROM plan_history WHERE user_id = ? AND substr(created_at, 1, 10) = ?");
 
 export { db };
 
@@ -144,7 +184,8 @@ export function migrateFromJson() {
             todo.datetime || null,
             todo.date || null,
             todo.duration ?? 30,
-            todo.location || null
+            todo.location || null,
+            null  // plan_history_id — legacy migration
           );
         }
       }
@@ -220,7 +261,8 @@ export function savePlan(chatId: number, userId: number, data: {
         todo.datetime || null,
         todo.date || null,
         todo.duration ?? 30,
-        todo.location || null
+        todo.location || null,
+        null  // plan_history_id — legacy plan has none
       );
     }
   });
@@ -339,8 +381,8 @@ export function getCompletedTasksToday(userId: number): any[] {
   return rows.filter(t => t.done && t.completed_at && t.completed_at.startsWith(today));
 }
 
-export function detectTimeConflicts(userId: number, newTodos: any[]): { existing: any; new: any }[] {
-  const conflicts: { existing: any; new: any }[] = [];
+export function detectTimeConflicts(userId: number, newTodos: any[]): { existingTodo: any; newTodo: any }[] {
+  const conflicts: { existingTodo: any; newTodo: any }[] = [];
   const existingTodos = getUserTasks(userId);
 
   for (const newTodo of newTodos) {
@@ -360,10 +402,109 @@ export function detectTimeConflicts(userId: number, newTodos: any[]): { existing
       const exEnd = exStart + exDuration;
 
       if (newStart < exEnd && newEnd > exStart) {
-        conflicts.push({ existing, new: newTodo });
+        conflicts.push({ existingTodo: existing, newTodo });
       }
     }
   }
 
   return conflicts;
+}
+
+// ─── Plan History Operations ──────────────────────────────────────────────────
+
+export function insertPlanHistory(chatId: number, userId: number, data: {
+  title: string;
+  summary: string;
+  key_points: string[];
+  tags: string[];
+  language: string;
+  timeframe: string;
+  periodStart?: string;
+  periodEnd?: string;
+}): number {
+  const result = stmtInsertPlanHistory.run(
+    chatId,
+    userId,
+    data.title,
+    data.summary,
+    JSON.stringify(data.key_points),
+    JSON.stringify(data.tags),
+    data.language,
+    data.timeframe,
+    data.periodStart || null,
+    data.periodEnd || null
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function insertTodoWithPlanId(todo: any, planHistoryId: number) {
+  stmtInsertTodo.run(
+    todo.id,
+    todo.chat_id || 0,
+    todo.user_id || 0,
+    todo.task || '',
+    todo.priority || 'medium',
+    todo.done ? 1 : 0,
+    todo.time || null,
+    todo.datetime || null,
+    todo.date || null,
+    todo.duration ?? 30,
+    todo.location || null,
+    planHistoryId
+  );
+}
+
+export function getPlanHistoryById(id: number): any {
+  return stmtGetPlanHistoryById.get(id);
+}
+
+export function getPlanHistoriesByUser(userId: number): any[] {
+  return stmtGetPlanHistoriesByUser.all(userId);
+}
+
+export function getWeeklyPlanHistories(userId: number): any[] {
+  return stmtGetWeeklyPlanHistories.all(userId);
+}
+
+export function getTodosByPlanId(planHistoryId: number): any[] {
+  return stmtGetTodosByPlanId.all(planHistoryId);
+}
+
+export function deletePlanHistory(id: number) {
+  const txn = db.transaction(() => {
+    stmtDeleteTodosByPlanId.run(id);
+    stmtDeletePlanHistory.run(id);
+  });
+  txn();
+}
+
+export function deletePlanHistoriesByUser(userId: number) {
+  db.transaction(() => {
+    const plans = stmtGetPlanHistoriesByUser.all(userId) as any[];
+    for (const p of plans) {
+      stmtDeleteTodosByPlanId.run(p.id);
+    }
+    stmtDeletePlanHistoriesByUser.run(userId);
+  })();
+}
+
+export function deletePlanHistoriesByDate(userId: number, dateStr: string) {
+  const plans = stmtDeletePlanHistoriesByDate.all(userId, dateStr) as any[];
+  db.transaction(() => {
+    const rows = stmtGetPlanHistoriesByUser.all(userId) as any[];
+    for (const p of rows) {
+      if (p.created_at && (p.created_at as string).substring(0, 10) === dateStr) {
+        stmtDeleteTodosByPlanId.run(p.id);
+        stmtDeletePlanHistory.run(p.id);
+      }
+    }
+  })();
+}
+
+export function updateSnooze(taskId: string, snoozedUntil: string | null) {
+  db.prepare('UPDATE todos SET snoozed_until = ? WHERE id = ?').run(snoozedUntil, taskId);
+}
+
+export function deleteTodosByUserAndId(userId: number, taskId: string) {
+  db.prepare('DELETE FROM todos WHERE user_id = ? AND id = ?').run(userId, taskId);
 }

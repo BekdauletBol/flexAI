@@ -20,9 +20,7 @@
   "type": "module",
   "dependencies": {
     "better-sqlite3": "^12.10.0",
-    "canvas": "^3.2.3",
-    "chart.js": "^4.5.1",
-    "chartjs-node-canvas": "^5.0.0",
+
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -33,11 +31,8 @@
     "uuid": "^14.0.0"
   },
   "devDependencies": {
-<<<<<<< HEAD
     "@types/better-sqlite3": "^7.6.13",
-=======
     "@types/cors": "^2.8.19",
->>>>>>> 65a7f64 (add some features)
     "@types/express": "^5.0.6",
     "@types/node": "^25.9.1",
     "@types/pdfkit": "^0.17.6",

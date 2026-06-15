@@ -3,19 +3,15 @@ import cors from 'cors';
 import path from 'path';
 import { getPlan, completeTask, rescheduleTask, getAllPlans, getPlansByTimeframe, deleteTaskById, deletePlansByDate, deletePlanById, addTodoToPlan } from './services/planStore.js';
 import { setReminderOffset, getUserConfig } from './services/userConfig.js';
-<<<<<<< HEAD
-import { rescheduleReminder, updateReminderOffsets } from './services/scheduler.js';
-import { logger } from './logger.js';
-=======
 import { rescheduleReminder, updateReminderOffsets, cancelReminderByTaskId } from './services/scheduler.js';
+import { logger } from './logger.js';
 import { deleteMemoryEntry, clearAllMemory, getUserMemory, formatMemoryForDisplay } from './services/memoryStore.js';
->>>>>>> 65a7f64 (add some features)
 
 export function createServer() {
   const app = express();
 
-<<<<<<< HEAD
-  app.use(express.json({ limit: '1mb' }));
+  app.use(cors());
+  app.use(express.json({ limit: '10mb' }));
 
   // Simple rate limiter
   const rateLimit = new Map<string, { count: number; resetAt: number }>();
@@ -37,10 +33,6 @@ export function createServer() {
     }
     next();
   });
-=======
-  app.use(cors());
-  app.use(express.json({ limit: '10mb' }));
->>>>>>> 65a7f64 (add some features)
 
   app.use(express.static(path.resolve('public')));
   app.use('/assets', express.static(path.resolve('assets')));
@@ -94,8 +86,6 @@ export function createServer() {
     res.json({ success: true, todo });
   });
 
-<<<<<<< HEAD
-=======
   // Delete task
   app.post('/api/todo/delete', (req, res) => {
     const { userId, taskId, date } = req.body;
@@ -166,7 +156,7 @@ export function createServer() {
     const userId = req.query.userId;
     const timeframe = req.params.timeframe;
     if (!userId || !['day','week','month','year'].includes(timeframe)) {
-      res.status(400).json({ error: 'Missing userId or invalid timeframe' });
+      res.status(400).json({ error: 'Missing userId or timeframe' });
       return;
     }
 
@@ -220,7 +210,6 @@ export function createServer() {
   });
 
   // Change reminder offset setting
->>>>>>> 65a7f64 (add some features)
   app.post('/api/todo/reminder', (req, res) => {
     const { chatId, userId, offsetMinutes } = req.body;
     if (!chatId || !userId || typeof offsetMinutes !== 'number') {

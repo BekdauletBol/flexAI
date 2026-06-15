@@ -1,6 +1,6 @@
-import fs from 'fs';
-import path from 'path';
 import { AnalysisResult, TodoItem, TimeFrame } from '../types/analysis.js';
+import { db, detectTimeConflicts } from './db.js';
+export { detectTimeConflicts };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,341 +19,323 @@ export interface StoredPlan {
   periodEnd?: string;
 }
 
-/** Conflict: a new todo overlaps an existing todo */
 export interface Conflict {
   newTodo: TodoItem;
   existingTodo: TodoItem;
 }
 
-// ─── Persistence ──────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const PLAN_PATH = path.resolve(process.cwd(), 'day_plan.json');
-
-/**
- * In-memory store:
- *   userId → array of all plans (accumulative across all voice notes)
- */
-const userPlans: Map<number, StoredPlan[]> = new Map();
-
-/** Latest plan per chatId — for Mini App and /report compatibility */
-const latestPlanByChatId: Map<number, StoredPlan> = new Map();
-
-function load() {
-  try {
-    if (!fs.existsSync(PLAN_PATH)) return;
-    const content = fs.readFileSync(PLAN_PATH, 'utf-8').trim();
-    if (!content) return;
-    const raw = JSON.parse(content);
-
-    // Support both old format (Record<chatId, plan>) and new format
-    if (raw.__version === 2 && raw.userPlans) {
-      // New format
-      for (const [k, plans] of Object.entries(raw.userPlans as Record<string, StoredPlan[]>)) {
-        userPlans.set(Number(k), plans as StoredPlan[]);
-      }
-      for (const [k, plan] of Object.entries(raw.latestByChatId as Record<string, StoredPlan>)) {
-        latestPlanByChatId.set(Number(k), plan as StoredPlan);
-      }
-    } else {
-      // Migrate old format: each entry is a single plan keyed by chatId
-      for (const [, plan] of Object.entries(raw as Record<string, StoredPlan>)) {
-        const p = plan as StoredPlan;
-        const existing = userPlans.get(p.userId) || [];
-        existing.push(p);
-        userPlans.set(p.userId, existing);
-        latestPlanByChatId.set(p.chatId, p);
-      }
-    }
-    console.log(`[PlanStore] Loaded plans for ${userPlans.size} users`);
-  } catch (err) {
-    console.error('[PlanStore] Load error:', err);
-  }
+function rowToStoredPlan(row: any, todos: any[]): StoredPlan {
+  return {
+    chatId: row.chat_id,
+    userId: row.user_id,
+    title: row.title || '',
+    summary: row.summary || '',
+    key_points: JSON.parse(row.key_points || '[]'),
+    tags: JSON.parse(row.tags || '[]'),
+    language: row.language,
+    createdAt: row.created_at,
+    timeframe: (row.timeframe || 'day') as TimeFrame,
+    periodStart: row.period_start || undefined,
+    periodEnd: row.period_end || undefined,
+    todos: todos.map((t: any) => ({
+      id: t.id,
+      task: t.task,
+      priority: t.priority,
+      done: !!t.done,
+      time: t.time || undefined,
+      datetime: t.datetime || undefined,
+      date: t.date || undefined,
+      duration: t.duration,
+      location: t.location || undefined,
+    })),
+  };
 }
 
-function persist() {
-  const obj: Record<string, StoredPlan[]> = {};
-  for (const [k, v] of userPlans) obj[String(k)] = v;
+function todoFromRow(t: any): TodoItem {
+  return {
+    id: t.id,
+    task: t.task,
+    priority: t.priority,
+    done: !!t.done,
+    time: t.time || undefined,
+    datetime: t.datetime || undefined,
+    date: t.date || undefined,
+    duration: t.duration,
+    location: t.location || undefined,
 
-  const latestObj: Record<string, StoredPlan> = {};
-  for (const [k, v] of latestPlanByChatId) latestObj[String(k)] = v;
-
-  fs.writeFileSync(PLAN_PATH, JSON.stringify({ __version: 2, userPlans: obj, latestByChatId: latestObj }, null, 2));
+  };
 }
 
-load();
+// ─── Prepared statements ──────────────────────────────────────────────────────
+
+const stmtInsertPlanHistory = db.prepare(`
+  INSERT INTO plan_history (chat_id, user_id, title, summary, key_points, tags, language, timeframe, period_start, period_end)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const stmtGetLatestPlanByChat = db.prepare('SELECT * FROM plan_history WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1');
+const stmtGetTodosByPlanId = db.prepare('SELECT * FROM todos WHERE plan_history_id = ?');
+const stmtGetAllPlansByUser = db.prepare('SELECT * FROM plan_history WHERE user_id = ? ORDER BY created_at DESC');
+const stmtGetAllTodosByUser = db.prepare('SELECT * FROM todos WHERE user_id = ?');
+const stmtGetTodoById = db.prepare('SELECT * FROM todos WHERE id = ?');
+const stmtUpdateTodoDoneByChat = db.prepare("UPDATE todos SET done = ?, completed_at = CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END WHERE id = ? AND chat_id = ?");
+const stmtUpdateTodoTimeByChat = db.prepare("UPDATE todos SET time = ?, datetime = ?, date = ? WHERE id = ? AND chat_id = ?");
+const stmtUpdateTodoDateTimeByUser = db.prepare("UPDATE todos SET time = ?, date = ?, datetime = ? WHERE id = ? AND user_id = ?");
+const stmtDeleteTodosByPlanId = db.prepare('DELETE FROM todos WHERE plan_history_id = ?');
+const stmtDeletePlanHistory = db.prepare('DELETE FROM plan_history WHERE id = ?');
+const stmtDeleteTodosByUserAndId = db.prepare('DELETE FROM todos WHERE user_id = ? AND id = ?');
+const stmtDeleteAllUserPlanHistories = db.prepare('DELETE FROM plan_history WHERE user_id = ?');
+const stmtDeleteAllUserTodos = db.prepare('DELETE FROM todos WHERE user_id = ?');
+const stmtGetWeeklyPlans = db.prepare("SELECT * FROM plan_history WHERE user_id = ? AND created_at >= datetime('now', '-7 days') ORDER BY created_at DESC");
+const stmtDeletePlanHistoriesByDate = db.prepare("SELECT id FROM plan_history WHERE user_id = ? AND substr(created_at, 1, 10) = ?");
+const stmtMarkTodoDoneByUser = db.prepare("UPDATE todos SET done = 1, completed_at = datetime('now') WHERE id = ? AND user_id = ?");
+const stmtCountDoneByUser = db.prepare('SELECT COUNT(*) as c FROM todos WHERE user_id = ? AND done = 1');
+const stmtInsertTodo = db.prepare(`
+  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, plan_history_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const stmtFindPlanByDate = db.prepare("SELECT id FROM plan_history WHERE user_id = ? AND substr(created_at, 1, 10) = ? ORDER BY created_at DESC LIMIT 1");
+const stmtGetLastPlanIdByChat = db.prepare('SELECT id FROM plan_history WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1');
+const stmtDeletePlanById = db.prepare('DELETE FROM plan_history WHERE id = ? AND user_id = ?');
+const stmtDeleteTodosByPlanIdAndUser = db.prepare('DELETE FROM todos WHERE plan_history_id = ? AND user_id = ?');
 
 // ─── Conflict Detection ────────────────────────────────────────────────────────
 
-/**
- * Returns true if two todos overlap in time on the same date.
- * Uses "date" if present, otherwise treats both as same-day (today).
- */
-function todosConflict(a: TodoItem, b: TodoItem): boolean {
-  if (!a.time || !b.time) return false;
-
-  // If dates are set and different, no conflict
-  const aDate = a.date || null;
-  const bDate = b.date || null;
-  if (aDate && bDate && aDate !== bDate) return false;
-
-  const toMinutes = (t: string): number => {
-    const [h, m] = t.split(':').map(Number);
-    return h * 60 + m;
-  };
-
-  const aStart = toMinutes(a.time);
-  const aDuration = a.duration || 30;
-  const aEnd = aStart + aDuration;
-
-  const bStart = toMinutes(b.time);
-  const bDuration = b.duration || 30;
-  const bEnd = bStart + bDuration;
-
-  return aStart < bEnd && bStart < aEnd;
-}
-
-/**
- * Check incoming todos against all stored todos for this user.
- * Returns list of conflicts.
- */
 export function getConflicts(userId: number, newTodos: TodoItem[]): Conflict[] {
-  const existingTasks = getUserTasks(userId).filter(t => !t.done && t.time);
-  const conflicts: Conflict[] = [];
-
-  for (const newTodo of newTodos) {
-    if (!newTodo.time) continue;
-    for (const existing of existingTasks) {
-      if (todosConflict(newTodo, existing)) {
-        conflicts.push({ newTodo, existingTodo: existing });
-      }
-    }
-  }
-
-  return conflicts;
+  const raw = detectTimeConflicts(userId, newTodos);
+  return raw.map(r => ({
+    newTodo: r.newTodo as unknown as TodoItem,
+    existingTodo: r.existingTodo as unknown as TodoItem,
+  }));
 }
 
 // ─── Plan Operations ──────────────────────────────────────────────────────────
 
 export function savePlan(chatId: number, userId: number, analysis: AnalysisResult) {
-  const existing = userPlans.get(userId) || [];
-  const uniqueTodos: TodoItem[] = [];
-  const now = new Date();
-  const defaultDate = now.toISOString().substring(0, 10);
+  const defaultDate = new Date().toISOString().substring(0, 10);
+
+  // 1. Insert plan_history row
+  const result = stmtInsertPlanHistory.run(
+    chatId,
+    userId,
+    analysis.title,
+    analysis.summary,
+    JSON.stringify(analysis.key_points || []),
+    JSON.stringify(analysis.tags || []),
+    analysis.language,
+    analysis.timeframe || 'day',
+    analysis.periodStart || null,
+    analysis.periodEnd || null
+  );
+  const planHistoryId = result.lastInsertRowid as number;
+
+  // Ensure user and plans rows exist for FK references
+  db.prepare(`
+    INSERT OR IGNORE INTO users (user_id, language)
+    VALUES (?, 'ru')
+  `).run(userId);
+  db.prepare(`
+    INSERT OR IGNORE INTO plans (chat_id, user_id, title, summary, key_points, tags, language, created_at)
+    VALUES (?, ?, '', '', '[]', '[]', ?, datetime('now'))
+  `).run(chatId, userId, analysis.language);
+
+  // 2. Insert deduplicated todos
+  const existingTodos = stmtGetAllTodosByUser.all(userId) as any[];
+  let insertedCount = 0;
 
   for (const todo of analysis.todos) {
     const taskNorm = todo.task.trim().toLowerCase();
     const todoDate = todo.date || defaultDate;
 
-    const isDuplicate = existing.some(p => 
-      p.todos.some(t => {
-        const tDate = t.date || p.createdAt.substring(0, 10);
-        return t.task.trim().toLowerCase() === taskNorm && tDate === todoDate;
-      })
-    );
-
-    const isBatchDuplicate = uniqueTodos.some(t => {
+    const isDuplicate = existingTodos.some((t: any) => {
       const tDate = t.date || defaultDate;
       return t.task.trim().toLowerCase() === taskNorm && tDate === todoDate;
     });
 
-    if (!isDuplicate && !isBatchDuplicate) {
-      uniqueTodos.push(todo);
+    if (!isDuplicate) {
+      stmtInsertTodo.run(
+        todo.id,
+        chatId,
+        userId,
+        todo.task || '',
+        todo.priority || 'medium',
+        todo.done ? 1 : 0,
+        todo.time || null,
+        todo.datetime || null,
+        todo.date || null,
+        todo.duration ?? 30,
+        todo.location || null,
+        planHistoryId
+      );
+      // Also add to existingTodos to prevent intra-batch duplicates
+      existingTodos.push({ task: todo.task, date: todoDate });
+      insertedCount++;
     } else {
       console.log(`[PlanStore] Silently skipped duplicate task: "${todo.task}" for ${todoDate}`);
     }
   }
 
-  analysis.todos = uniqueTodos;
-
-  const plan: StoredPlan = {
-    chatId,
-    userId,
-    title: analysis.title,
-    summary: analysis.summary,
-    key_points: analysis.key_points,
-    todos: analysis.todos,
-    tags: analysis.tags,
-    language: analysis.language,
-    createdAt: new Date().toISOString(),
-    timeframe: analysis.timeframe || 'day',
-    periodStart: analysis.periodStart,
-    periodEnd: analysis.periodEnd,
-  };
-
-  // Accumulate — append to user's plan history
-  existing.push(plan);
-  userPlans.set(userId, existing);
-
-  // Track latest per chatId for Mini App
-  latestPlanByChatId.set(chatId, plan);
-
-  persist();
-  console.log(`[PlanStore] Saved plan for user ${userId} / chat ${chatId}: "${analysis.title}" (${analysis.todos.length} todos, ${analysis.timeframe})`);
+  console.log(`[PlanStore] Saved plan for user ${userId} / chat ${chatId}: "${analysis.title}" (${insertedCount} todos, ${analysis.timeframe})`);
 }
 
-/** Get the latest plan for a chatId (used by Mini App and scheduler). */
 export function getPlan(chatId: number): StoredPlan | undefined {
-  return latestPlanByChatId.get(chatId);
+  const row = stmtGetLatestPlanByChat.get(chatId) as any;
+  if (!row) return undefined;
+
+  const todos = stmtGetTodosByPlanId.all(row.id) as any[];
+  return rowToStoredPlan(row, todos);
 }
 
-/** Get ALL todos for a user across all voice notes. */
 export function getUserTasks(userId: number): TodoItem[] {
-  const plans = userPlans.get(userId) || [];
-  const all: TodoItem[] = [];
-  for (const plan of plans) all.push(...plan.todos);
-  return all;
+  const rows = stmtGetAllTodosByUser.all(userId) as any[];
+  return rows.map(todoFromRow);
 }
 
-/** Mark a task done/undone. */
+export function getTasksFiltered(userId: number, filters: {
+  date?: string | null;
+  beforeTime?: string | null;
+  afterTime?: string | null;
+  priority?: string | null;
+}): TodoItem[] {
+  let query = 'SELECT * FROM todos WHERE user_id = ? AND done = 0';
+  const params: any[] = [userId];
+
+  if (filters.date) {
+    query += ' AND date = ?';
+    params.push(filters.date);
+  }
+  if (filters.beforeTime) {
+    query += ' AND time < ?';
+    params.push(filters.beforeTime);
+  }
+  if (filters.afterTime) {
+    query += ' AND time > ?';
+    params.push(filters.afterTime);
+  }
+  if (filters.priority) {
+    query += ' AND priority = ?';
+    params.push(filters.priority);
+  }
+
+  query += ' ORDER BY time ASC';
+  const rows = db.prepare(query).all(...params) as any[];
+  return rows.map(todoFromRow);
+}
+
 export function completeTask(chatId: number, taskId: string, done: boolean): TodoItem | undefined {
-  // Search across all plans for this chatId's user
-  const plan = latestPlanByChatId.get(chatId);
-  if (!plan) return undefined;
-  const userId = plan.userId;
-
-  const plans = userPlans.get(userId) || [];
-  for (const p of plans) {
-    const todo = p.todos.find(t => t.id === taskId);
-    if (todo) {
-      todo.done = done;
-      persist();
-      return todo;
-    }
-  }
-  return undefined;
+  stmtUpdateTodoDoneByChat.run(done ? 1 : 0, done ? 1 : 0, taskId, chatId);
+  const row = stmtGetTodoById.get(taskId) as any;
+  return row ? todoFromRow(row) : undefined;
 }
 
-/** Reschedule a task. */
-export function rescheduleTask(chatId: number, taskId: string, newTime: string): TodoItem | undefined {
-  const plan = latestPlanByChatId.get(chatId);
-  if (!plan) return undefined;
-  const userId = plan.userId;
-
-  const plans = userPlans.get(userId) || [];
-  for (const p of plans) {
-    const todo = p.todos.find(t => t.id === taskId);
-    if (todo) {
-      todo.time = newTime;
-      persist();
-      return todo;
-    }
-  }
-  return undefined;
+export function rescheduleTask(chatId: number, taskId: string, newTime: string, newDate?: string): TodoItem | undefined {
+  const newDatetime = newDate && newTime ? `${newDate}T${newTime}:00` : null;
+  stmtUpdateTodoTimeByChat.run(newTime, newDatetime || null, newDate || null, taskId, chatId);
+  const row = stmtGetTodoById.get(taskId) as any;
+  return row ? todoFromRow(row) : undefined;
 }
 
-/** Update a task's date AND time by userId + taskId. */
 export function updateTaskDateTime(userId: number, taskId: string, newDate: string, newTime: string): TodoItem | undefined {
-  const plans = userPlans.get(userId) || [];
-  for (const plan of plans) {
-    const todo = plan.todos.find(t => t.id === taskId);
-    if (todo) {
-      todo.date = newDate;
-      todo.time = newTime;
-      persist();
-      return todo;
-    }
-  }
-  return undefined;
+  const newDatetime = `${newDate}T${newTime}:00`;
+  stmtUpdateTodoDateTimeByUser.run(newTime, newDate, newDatetime, taskId, userId);
+  const row = stmtGetTodoById.get(taskId) as any;
+  return row ? todoFromRow(row) : undefined;
 }
 
-/** Archive (mark done) all completed tasks — used by /clear */
 export function archiveCompletedTasks(userId: number): number {
-  const plans = userPlans.get(userId) || [];
-  let count = 0;
-  for (const plan of plans) {
-    for (const todo of plan.todos) {
-      if (todo.done) count++;
-    }
-    // Remove completed todos from plan
-    plan.todos = plan.todos.filter(t => !t.done);
+  const result = stmtCountDoneByUser.get(userId) as { c: number };
+  const count = result.c;
+  if (count > 0) {
+    db.prepare('DELETE FROM todos WHERE user_id = ? AND done = 1').run(userId);
   }
-  persist();
   return count;
 }
 
-/** Get ALL plans for a user (raw objects, for view intent). */
 export function getAllPlans(userId: number): StoredPlan[] {
-  return userPlans.get(userId) || [];
+  const rows = stmtGetAllPlansByUser.all(userId) as any[];
+  return rows.map(row => {
+    const todos = stmtGetTodosByPlanId.all(row.id) as any[];
+    return rowToStoredPlan(row, todos);
+  });
 }
 
-/** Get plans by timeframe. */
 export function getPlansByTimeframe(userId: number, timeframe: TimeFrame): StoredPlan[] {
-  return (userPlans.get(userId) || []).filter(p => p.timeframe === timeframe);
+  const rows = db.prepare('SELECT * FROM plan_history WHERE user_id = ? AND timeframe = ? ORDER BY created_at DESC').all(userId, timeframe) as any[];
+  return rows.map(row => {
+    const todos = stmtGetTodosByPlanId.all(row.id) as any[];
+    return rowToStoredPlan(row, todos);
+  });
 }
 
-/** Get past 7 days of plans for /weekly */
 export function getWeeklyPlans(userId: number): StoredPlan[] {
-  const plans = userPlans.get(userId) || [];
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 7);
-  return plans.filter(p => new Date(p.createdAt) >= cutoff);
+  const rows = stmtGetWeeklyPlans.all(userId) as any[];
+  return rows.map(row => {
+    const todos = stmtGetTodosByPlanId.all(row.id) as any[];
+    return rowToStoredPlan(row, todos);
+  });
 }
 
-/** Delete a specific task by ID across all plans for a user. */
 export function deleteTaskById(userId: number, taskId: string): TodoItem | null {
-  const plans = userPlans.get(userId) || [];
-  for (const plan of plans) {
-    const idx = plan.todos.findIndex(t => t.id === taskId);
-    if (idx !== -1) {
-      const removed = plan.todos.splice(idx, 1)[0];
-      persist();
-      return removed;
-    }
-  }
-  return null;
+  const row = stmtGetTodoById.get(taskId) as any;
+  if (!row) return null;
+  stmtDeleteTodosByUserAndId.run(userId, taskId);
+  return todoFromRow(row);
 }
 
-/** Find a task by matching text across all plans for a user. */
 export function findTaskByText(userId: number, text: string, date?: string): { plan: StoredPlan; todo: TodoItem } | null {
-  const plans = userPlans.get(userId) || [];
+  const todos = stmtGetAllTodosByUser.all(userId) as any[];
   const lower = text.toLowerCase();
-  for (const plan of plans) {
-    if (date && !plan.createdAt.startsWith(date)) continue;
-    for (const todo of plan.todos) {
-      if (todo.task.toLowerCase().includes(lower)) {
-        return { plan, todo };
+  for (const t of todos) {
+    if (t.task.toLowerCase().includes(lower)) {
+      if (date && t.date && t.date !== date) continue;
+      const planRow = db.prepare('SELECT * FROM plan_history WHERE id = ?').get(t.plan_history_id) as any;
+      if (planRow) {
+        const planTodos = stmtGetTodosByPlanId.all(planRow.id) as any[];
+        return { plan: rowToStoredPlan(planRow, planTodos), todo: todoFromRow(t) };
       }
+      return null;
     }
   }
   return null;
 }
 
-/** Delete all plans for a given date (YYYY-MM-DD). */
 export function deletePlansByDate(userId: number, dateStr: string): number {
-  const plans = userPlans.get(userId) || [];
-  const before = plans.length;
-  userPlans.set(userId, plans.filter(p => {
-    const planDate = p.createdAt.substring(0, 10);
-    return planDate !== dateStr;
-  }));
-  const removed = before - (userPlans.get(userId) || []).length;
-  if (removed > 0) persist();
-  return removed;
-}
-
-/** Delete ALL plans for a user — /nuke command. */
-export function deleteAllUserPlans(userId: number): void {
-  userPlans.delete(userId);
-  for (const [k, v] of latestPlanByChatId.entries()) {
-    if (v.userId === userId) latestPlanByChatId.delete(k);
+  const ids = stmtDeletePlanHistoriesByDate.all(userId, dateStr) as any[];
+  const count = ids.length;
+  if (count > 0) {
+    db.transaction(() => {
+      for (const row of ids) {
+        stmtDeleteTodosByPlanIdAndUser.run(row.id, userId);
+        stmtDeletePlanById.run(row.id, userId);
+      }
+    })();
   }
-  persist();
+  return count;
 }
 
-/** Delete a plan by its index within user's plan list. */
+export function deleteAllUserPlans(userId: number): void {
+  db.transaction(() => {
+    stmtDeleteAllUserTodos.run(userId);
+    stmtDeleteAllUserPlanHistories.run(userId);
+  })();
+}
+
 export function deletePlanById(userId: number, planId: string): boolean {
-  const plans = userPlans.get(userId) || [];
-  const idx = plans.findIndex(p => p.createdAt === planId);
-  if (idx === -1) return false;
-  plans.splice(idx, 1);
-  userPlans.set(userId, plans);
-  persist();
+  const id = parseInt(planId, 10);
+  if (isNaN(id)) return false;
+  const row = db.prepare('SELECT id FROM plan_history WHERE id = ? AND user_id = ?').get(id, userId) as any;
+  if (!row) return false;
+  db.transaction(() => {
+    stmtDeleteTodosByPlanIdAndUser.run(id, userId);
+    stmtDeletePlanById.run(id, userId);
+  })();
   return true;
 }
 
-/** Get all plans for a user formatted for LLM context. */
 export function getAllPlansForLLM(userId: number): string {
-  const plans = userPlans.get(userId) || [];
+  const plans = getAllPlans(userId);
   if (plans.length === 0) return 'No plans recorded.';
   return JSON.stringify(plans.map(p => ({
     date: p.createdAt.substring(0, 10),
@@ -377,115 +359,113 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
     done: false,
   };
 
-  const existing = userPlans.get(userId) || [];
   const today = date || now.toISOString().substring(0, 10);
   const taskNorm = task.trim().toLowerCase();
-  
-  const isDuplicate = existing.some(p => 
-    p.todos.some(t => {
-      const tDate = t.date || p.createdAt.substring(0, 10);
-      return t.task.trim().toLowerCase() === taskNorm && tDate === today;
-    })
-  );
+
+  // Check for duplicates
+  const existingTodos = stmtGetAllTodosByUser.all(userId) as any[];
+  const isDuplicate = existingTodos.some((t: any) => {
+    const tDate = t.date || today;
+    return t.task.trim().toLowerCase() === taskNorm && tDate === today;
+  });
 
   if (isDuplicate) {
-    console.log(`[PlanStore] Silently skipped duplicate task: "${task}" for ${today}`);
-    // Return existing task if found, otherwise return the unsaved duplicate as a stub
-    let dupTodo = todo;
-    for (const p of existing) {
-      const found = p.todos.find(t => {
-        const tDate = t.date || p.createdAt.substring(0, 10);
-        return t.task.trim().toLowerCase() === taskNorm && tDate === today;
-      });
-      if (found) { dupTodo = found; break; }
-    }
-    return dupTodo;
+    const dup = existingTodos.find((t: any) => {
+      const tDate = t.date || today;
+      return t.task.trim().toLowerCase() === taskNorm && tDate === today;
+    });
+    return dup ? todoFromRow(dup) : todo;
   }
 
-  let plan = existing.find(p => p.createdAt.startsWith(today) && p.timeframe === 'day');
-
-  if (plan) {
-    plan.todos.push(todo);
+  // Find existing plan or create one
+  let planId: number | null = null;
+  const existingPlan = stmtFindPlanByDate.get(userId, today) as any;
+  if (existingPlan) {
+    planId = existingPlan.id;
   } else {
-    plan = {
-      chatId,
-      userId,
-      title: `Plan for ${today}`,
-      summary: '',
-      key_points: [],
-      todos: [todo],
-      tags: [],
-      language: 'en',
-      createdAt: now.toISOString(),
-      timeframe: 'day',
-      periodStart: today,
-      periodEnd: today,
-    };
-    existing.push(plan);
-    userPlans.set(userId, existing);
+    const result = stmtInsertPlanHistory.run(
+      chatId, userId,
+      `Plan for ${today}`, '', '[]', '[]',
+      'en', 'day', today, today
+    );
+    planId = result.lastInsertRowid as number;
   }
 
-  latestPlanByChatId.set(chatId, plan);
-  persist();
+  stmtInsertTodo.run(
+    todo.id, chatId, userId, todo.task, todo.priority || 'medium',
+    todo.done ? 1 : 0, todo.time || null, null, todo.date || null,
+    todo.duration ?? 30, todo.location || null, planId
+  );
+
   console.log(`[PlanStore] Added todo: "${task}" at ${time} for ${today}`);
   return todo;
 }
 
-/** Fuzzy find tasks by name — returns ALL substring matches. */
 export function findTasksByName(userId: number, text: string): { plan: StoredPlan; todo: TodoItem }[] {
-  const plans = userPlans.get(userId) || [];
+  const todos = stmtGetAllTodosByUser.all(userId) as any[];
   const lower = text.toLowerCase().trim();
   const results: { plan: StoredPlan; todo: TodoItem }[] = [];
-  for (const plan of plans) {
-    for (const todo of plan.todos) {
-      if (todo.task.toLowerCase().includes(lower)) {
-        results.push({ plan, todo });
+  const seenPlanIds = new Map<number, StoredPlan>();
+
+  for (const t of todos) {
+    if (t.task.toLowerCase().includes(lower)) {
+      let plan = seenPlanIds.get(t.plan_history_id);
+      if (!plan && t.plan_history_id) {
+        const planRow = db.prepare('SELECT * FROM plan_history WHERE id = ?').get(t.plan_history_id) as any;
+        if (planRow) {
+          const ptodos = stmtGetTodosByPlanId.all(planRow.id) as any[];
+          plan = rowToStoredPlan(planRow, ptodos);
+          seenPlanIds.set(t.plan_history_id, plan);
+        }
+      }
+      if (plan) {
+        results.push({ plan, todo: todoFromRow(t) });
       }
     }
   }
   return results;
 }
 
-/** Find a single task by name — exact match first, then substring. */
 export function findTaskByName(userId: number, text: string): { plan: StoredPlan; todo: TodoItem } | null {
-  const plans = userPlans.get(userId) || [];
+  const todos = stmtGetAllTodosByUser.all(userId) as any[];
   const lower = text.toLowerCase().trim();
 
-  for (const plan of plans) {
-    for (const todo of plan.todos) {
-      if (todo.task.toLowerCase().trim() === lower) {
-        return { plan, todo };
+  // Exact match first
+  for (const t of todos) {
+    if (t.task.toLowerCase().trim() === lower) {
+      if (t.plan_history_id) {
+        const planRow = db.prepare('SELECT * FROM plan_history WHERE id = ?').get(t.plan_history_id) as any;
+        if (planRow) {
+          const ptodos = stmtGetTodosByPlanId.all(planRow.id) as any[];
+          return { plan: rowToStoredPlan(planRow, ptodos), todo: todoFromRow(t) };
+        }
       }
     }
   }
 
-  for (const plan of plans) {
-    for (const todo of plan.todos) {
-      if (todo.task.toLowerCase().includes(lower)) {
-        return { plan, todo };
+  // Substring match
+  for (const t of todos) {
+    if (t.task.toLowerCase().includes(lower)) {
+      if (t.plan_history_id) {
+        const planRow = db.prepare('SELECT * FROM plan_history WHERE id = ?').get(t.plan_history_id) as any;
+        if (planRow) {
+          const ptodos = stmtGetTodosByPlanId.all(planRow.id) as any[];
+          return { plan: rowToStoredPlan(planRow, ptodos), todo: todoFromRow(t) };
+        }
       }
     }
   }
   return null;
 }
 
-/** Mark a task done by userId + taskId. */
 export function markTaskDone(userId: number, taskId: string): TodoItem | undefined {
-  const plans = userPlans.get(userId) || [];
-  for (const plan of plans) {
-    const todo = plan.todos.find(t => t.id === taskId);
-    if (todo) {
-      todo.done = true;
-      persist();
-      return todo;
-    }
-  }
-  return undefined;
+  stmtMarkTodoDoneByUser.run(taskId, userId);
+  const row = stmtGetTodoById.get(taskId) as any;
+  return row ? todoFromRow(row) : undefined;
 }
 
-/** Get tasks for a period: today, tomorrow, week, all. */
 export function getTasksForPeriod(userId: number, period: string): TodoItem[] {
-  const plans = userPlans.get(userId) || [];
+  const todos = stmtGetAllTodosByUser.all(userId) as any[];
   const now = new Date();
   const today = now.toISOString().substring(0, 10);
 
@@ -499,26 +479,29 @@ export function getTasksForPeriod(userId: number, period: string): TodoItem[] {
   }
 
   const results: TodoItem[] = [];
-  for (const plan of plans) {
-    for (const todo of plan.todos) {
-      const todoDate = todo.date || plan.createdAt.substring(0, 10);
-      if (period === 'all') {
-        results.push(todo);
-      } else if (period === 'week') {
-        const planDate = new Date(plan.createdAt);
-        const weekAgo = new Date(now);
-        weekAgo.setDate(weekAgo.getDate() - 7);
-        if (planDate >= weekAgo) results.push(todo);
-      } else if (filterDate && todoDate === filterDate) {
-        results.push(todo);
+  for (const t of todos) {
+    const todoDate = t.date || today;
+    if (period === 'all') {
+      results.push(todoFromRow(t));
+    } else if (period === 'week') {
+      if (t.plan_history_id) {
+        const planRow = db.prepare('SELECT created_at FROM plan_history WHERE id = ?').get(t.plan_history_id) as any;
+        if (planRow) {
+          const planDate = new Date(planRow.created_at);
+          const weekAgo = new Date(now);
+          weekAgo.setDate(weekAgo.getDate() - 7);
+          if (planDate >= weekAgo) results.push(todoFromRow(t));
+        }
       }
+    } else if (filterDate && todoDate === filterDate) {
+      results.push(todoFromRow(t));
     }
   }
   return results;
 }
 
 export function getPlanForWebApp(chatId: number) {
-  const plan = latestPlanByChatId.get(chatId);
+  const plan = getPlan(chatId);
   if (!plan) return null;
   return {
     chatId: plan.chatId,

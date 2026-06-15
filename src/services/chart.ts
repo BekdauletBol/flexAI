@@ -1,11 +1,9 @@
+import PDFDocument from 'pdfkit';
 import { logger } from '../logger.js';
-import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
 import { AnalysisResult, TodoItem } from '../types/analysis.js';
 
 const WIDTH = 1200;
 const HEIGHT = 800;
-
-const chartCanvas = new ChartJSNodeCanvas({ width: WIDTH, height: HEIGHT, backgroundColour: '#0F172A' });
 
 function priorityColor(p: string, done: boolean): string {
   if (done) return '#2DD4BF';
@@ -15,124 +13,95 @@ function priorityColor(p: string, done: boolean): string {
 }
 
 function parseTime(time?: string): number {
-  if (!time) return 9; // default 9:00
+  if (!time) return 9;
   const m = time.match(/^(\d{1,2}):(\d{2})$/);
   return m ? parseInt(m[1]) + parseInt(m[2]) / 60 : 9;
 }
 
 export async function generateChart(analysis: AnalysisResult): Promise<Buffer> {
   const todos = analysis.todos;
-  if (todos.length === 0) {
-    // Return a minimal "no tasks" image
-    return chartCanvas.renderToBuffer({
-      type: 'bar',
-      data: { labels: ['No tasks'], datasets: [{ data: [0], backgroundColor: '#1E293B' }] },
-      options: { plugins: { title: { display: true, text: analysis.title, color: '#FFF', font: { size: 20 } } } },
-    });
-  }
-
-  // Sort by time
   const sorted = [...todos].sort((a, b) => parseTime(a.time) - parseTime(b.time));
 
-  // ── Gantt-style horizontal bar chart data ──
-  const labels = sorted.map(t => {
-    const timeStr = t.time || '';
-    const name = t.task.length > 30 ? t.task.substring(0, 30) + '…' : t.task;
-    return timeStr ? `${timeStr}  ${name}` : name;
+  const doc = new PDFDocument({ size: [WIDTH, HEIGHT], margin: 40 });
+  const chunks: Buffer[] = [];
+  doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+
+  return new Promise<Buffer>((resolve, reject) => {
+    doc.on('end', () => {
+      const buf = Buffer.concat(chunks);
+      logger.info(`[Chart] Generated PDF chart: ${(buf.byteLength / 1024).toFixed(0)} KB`);
+      resolve(buf);
+    });
+    doc.on('error', reject);
+
+    // ── Background ──
+    doc.rect(0, 0, WIDTH, HEIGHT).fill('#0F172A');
+
+    // ── Title ──
+    doc.fontSize(18).fillColor('#FFFFFF').text(analysis.title, 40, 40, { width: WIDTH - 80 });
+
+    // ── Subtitle stats ──
+    const high = todos.filter(t => t.priority === 'high').length;
+    const med = todos.filter(t => t.priority === 'medium').length;
+    const low = todos.filter(t => t.priority === 'low').length;
+    const done = todos.filter(t => t.done).length;
+    doc.fontSize(12).fillColor('#94A3B8').text(`High: ${high}  Medium: ${med}  Low: ${low}  Done: ${done}`, 40, 65, { width: WIDTH - 80 });
+
+    // ── Find time range ──
+    const startTimes = sorted.map(t => parseTime(t.time));
+    const durations = sorted.map(t => (t.duration || 30) / 60);
+    const minTime = Math.max(0, Math.floor(Math.min(...startTimes)) - 1);
+    const maxTime = Math.min(24, Math.ceil(Math.max(...startTimes.map((s, i) => s + durations[i]))) + 1);
+
+    // ── Chart area ──
+    const chartLeft = 160;
+    const chartTop = 110;
+    const chartWidth = WIDTH - chartLeft - 60;
+    const chartHeight = Math.max(200, sorted.length * 40 + 40);
+    const barHeight = 28;
+    const barGap = 12;
+
+    // Y-axis labels (tasks)
+    sorted.forEach((t, i) => {
+      const y = chartTop + i * (barHeight + barGap);
+      const timeStr = t.time || '';
+      const name = t.task.length > 30 ? t.task.substring(0, 30) + '…' : t.task;
+      const label = timeStr ? `${timeStr}  ${name}` : name;
+      doc.fontSize(10).fillColor('#E2E8F0').text(label, 40, y + 6, { width: chartLeft - 50, align: 'right' });
+    });
+
+    // ── X-axis grid ──
+    const hourRange = maxTime - minTime;
+    if (hourRange > 0) {
+      for (let h = Math.ceil(minTime); h <= Math.floor(maxTime); h++) {
+        const x = chartLeft + ((h - minTime) / hourRange) * chartWidth;
+        doc.moveTo(x, chartTop).lineTo(x, chartTop + sorted.length * (barHeight + barGap)).strokeColor('rgba(148,163,184,0.15)').stroke();
+        doc.fontSize(9).fillColor('#CBD5E1').text(`${h}:00`, x - 10, chartTop + sorted.length * (barHeight + barGap) + 5, { width: 20, align: 'center' });
+      }
+    }
+
+    // ── Bars ──
+    sorted.forEach((t, i) => {
+      const y = chartTop + i * (barHeight + barGap);
+      const start = parseTime(t.time);
+      const dur = (t.duration || 30) / 60;
+      if (hourRange > 0 && dur > 0) {
+        const x = chartLeft + ((start - minTime) / hourRange) * chartWidth;
+        const w = (dur / hourRange) * chartWidth;
+        const color = priorityColor(t.priority, t.done);
+        doc.roundedRect(x, y, Math.max(w, 4), barHeight, 6).fill(color);
+        // Task name inside bar if wide enough
+        if (w > 60) {
+          doc.fontSize(8).fillColor('#FFFFFF').text(t.task.length > 20 ? t.task.substring(0, 20) + '…' : t.task, x + 4, y + 8, { width: w - 8 });
+        }
+      }
+    });
+
+    // ── Empty state ──
+    if (sorted.length === 0) {
+      doc.fontSize(16).fillColor('#94A3B8').text('No tasks', 40, chartTop + 40);
+    }
+
+    doc.end();
   });
-
-  const startTimes = sorted.map(t => parseTime(t.time));
-  const durations = sorted.map(t => (t.duration || 30) / 60);
-  const colors = sorted.map(t => priorityColor(t.priority, t.done));
-
-  // Find time range
-  const minTime = Math.max(0, Math.floor(Math.min(...startTimes)) - 1);
-  const maxTime = Math.min(24, Math.ceil(Math.max(...startTimes.map((s, i) => s + durations[i]))) + 1);
-
-  // Priority counts for donut
-  const high = todos.filter(t => t.priority === 'high').length;
-  const med = todos.filter(t => t.priority === 'medium').length;
-  const low = todos.filter(t => t.priority === 'low').length;
-  const done = todos.filter(t => t.done).length;
-
-  const config: any = {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'Start',
-          data: startTimes,
-          backgroundColor: 'transparent',
-          borderWidth: 0,
-          barPercentage: 0.6,
-        },
-        {
-          label: 'Duration',
-          data: durations,
-          backgroundColor: colors,
-          borderWidth: 0,
-          borderRadius: 6,
-          barPercentage: 0.6,
-        },
-      ],
-    },
-    options: {
-      indexAxis: 'y' as const,
-      responsive: false,
-      scales: {
-        x: {
-          stacked: true,
-          min: minTime,
-          max: maxTime,
-          title: { display: true, text: 'Time of Day', color: '#94A3B8', font: { size: 12 } },
-          ticks: {
-            color: '#CBD5E1',
-            stepSize: 1,
-            callback: (v: number) => `${Math.floor(v)}:${((v % 1) * 60).toString().padStart(2, '0')}`,
-          },
-          grid: { color: 'rgba(148,163,184,0.1)' },
-        },
-        y: {
-          stacked: true,
-          ticks: { color: '#E2E8F0', font: { size: 11 } },
-          grid: { display: false },
-        },
-      },
-      plugins: {
-        title: {
-          display: true,
-<<<<<<< HEAD
-          text: analysis.title,
-=======
-          text: `Plan: ${analysis.title}`,
->>>>>>> 65a7f64 (add some features)
-          color: '#FFFFFF',
-          font: { size: 18, weight: 'bold' as const },
-          padding: { bottom: 20 },
-        },
-        subtitle: {
-          display: true,
-          text: `High: ${high}  Medium: ${med}  Low: ${low}  Done: ${done}`,
-          color: '#94A3B8',
-          font: { size: 12 },
-          padding: { bottom: 10 },
-        },
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: (ctx: any) => {
-              if (ctx.datasetIndex === 0) return '';
-              const todo = sorted[ctx.dataIndex];
-              return `${todo.task} (${todo.priority}) — ${todo.duration || 30} min`;
-            },
-          },
-        },
-      },
-    },
-  };
-
-  const buffer = await chartCanvas.renderToBuffer(config);
-  logger.info(`[Chart] Generated: ${(buffer.byteLength / 1024).toFixed(0)} KB`);
-  return buffer;
 }

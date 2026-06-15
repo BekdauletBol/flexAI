@@ -3,14 +3,14 @@ import { config } from '../config.js';
 import { transcribeAudio } from '../services/whisper.js';
 import { analyzeTranscript } from '../services/analysis.js';
 import { scheduleReminders, cancelReminderByTaskId } from '../services/scheduler.js';
-import { savePlan, getConflicts, deleteTaskById, findTaskByText, deletePlansByDate, getUserTasks, getAllPlansForLLM, getAllPlans, getWeeklyPlans, archiveCompletedTasks, findTasksByName, findTaskByName, markTaskDone, getTasksForPeriod } from '../services/planStore.js';
+import { savePlan, getConflicts, deleteTaskById, findTaskByText, deletePlansByDate, getUserTasks, getAllPlansForLLM, getAllPlans, getWeeklyPlans, archiveCompletedTasks, findTasksByName, findTaskByName, markTaskDone, getTasksForPeriod, getTasksFiltered, updateTaskDateTime } from '../services/planStore.js';
 import { getUserConfig, setUserLanguage } from '../services/userConfig.js';
 import { searchPlace, getWeatherForecast, getDirections, generateLocationAdvice } from '../services/location.js';
-import { savePending } from '../services/pendingStore.js';
+import { savePending, setUserFlowState, clearUserFlowState, getUserState, setUserState, clearUserState, UserState } from '../services/pendingStore.js';
 import { buildConflictMessage, buildCombinedConflictMessage, getConflictKeyboard, getCombinedConflictKeyboard, getSingleConflictKeyboard, getNavKeyboard } from '../services/messages.js';
 import { startDeliveryFlow } from '../services/delivery.js';
-import { detectIntent, askQuestion, chatReply, extractRescheduleInfo, extractDeleteInfo, extractViewInfo, extractMemoryUpdate } from '../services/intent.js';
-import { getUserMemory, updateUserMemory, formatMemoryForDisplay } from '../services/memoryStore.js';
+import { detectIntent, askQuestion, chatReply, extractDeleteInfo, extractMemoryUpdate } from '../services/intent.js';
+import { getUserMemory, updateUserMemory } from '../services/memoryStore.js';
 import { generateReportPdf } from '../services/pdf.js';
 import { generateFullReport, generateWeeklyReport } from '../services/reporter.js';
 import fs from 'fs';
@@ -86,12 +86,18 @@ export async function handleVoice(ctx: Context) {
       await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Could not recognize speech.');
       return;
     }
+    const lang = getUserConfig(userId).language || 'en';
+
+    const state = getUserState(userId);
+    if (state?.flow) {
+      await continueFlow(ctx, userId, state, transcript, statusMsg, lang);
+      return;
+    }
 
     // 3. Intent detection
     try { await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Analyzing...'); } catch {}
     const intentResult = await detectIntent(transcript);
-    const lang = getUserConfig(userId).language || 'en';
-
+    
     // Auto-update memory
     try {
       const currentMem = JSON.stringify(getUserMemory(userId));
@@ -104,38 +110,7 @@ export async function handleVoice(ctx: Context) {
       }
     } catch (e) { console.error('[Voice] Memory update error:', e); }
 
-    // Low confidence → ask clarification (skip for action/command intents)
-    if (intentResult.confidence < 0.6 && intentResult.intent !== 'action' && intentResult.intent !== 'command') {
-      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id,
-        lang === 'ru' ? 'Вы хотите запланировать это или просто спросить?'
-        : lang === 'kk' ? 'Сіз мұны жоспарлағыңыз келе ме, әлде сұрағыңыз келе ме?'
-        : 'Did you want to schedule this or were you just asking?');
-      return;
-    }
-
-    // Route by intent
-    const intent = intentResult.intent;
-    if (intent === 'action') {
-      await handlePlanIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intent === 'query') {
-      await handleQuestionIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intent === 'memory_query') {
-      await handleMemoryQueryIntent(ctx, userId, statusMsg, lang);
-    } else if (intent === 'reschedule') {
-      await handleRescheduleIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intent === 'delete') {
-      await handleDeleteIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intent === 'complete') {
-      await handleCompleteIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intent === 'view') {
-      await handleViewIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intent === 'chat' || intent === 'social') {
-      await handleChatIntent(ctx, userId, transcript, statusMsg, lang);
-    } else if (intent === 'summary') {
-      await handleSummaryIntent(ctx, userId, intentResult, statusMsg, lang);
-    } else if (intent === 'command') {
-      await handleCommandIntent(ctx, userId, intentResult, statusMsg, lang);
-    }
+    await routeByIntent(intentResult, ctx, userId, transcript, statusMsg, lang);
 
     console.log(`[Voice] Done: ${intentResult.intent} from @${username}`);
 
@@ -162,7 +137,7 @@ export async function handleVoice(ctx: Context) {
 
 // ─── Intent Handlers ──────────────────────────────────────────────────────────
 
-async function handlePlanIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, defaultLang: string) {
+export async function handlePlanIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, defaultLang: string) {
   try { await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Processing...'); } catch {}
 
   let analysis;
@@ -183,9 +158,25 @@ async function handlePlanIntent(ctx: Context, userId: number, transcript: string
 
   const lang = analysis.language || defaultLang;
 
+  // Before saving any task, check if the task name contains delete keywords
+  const deleteKeywords = ['убери', 'удали', 'отмени', 'убрать', 'удалить', 'remove', 'delete', 'cancel'];
+  analysis.todos = analysis.todos.filter(todo => {
+    const taskNameLower = todo.task.toLowerCase();
+    if (deleteKeywords.some(kw => taskNameLower.includes(kw))) {
+      console.warn('[Action] Skipping suspicious task that looks like a delete command:', todo.task);
+      return false;
+    }
+    return true;
+  });
+
+  if (analysis.todos.length === 0) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+    return;
+  }
+
   // Location Assistant
   let locationAdvice = '';
-  if (analysis.location_query) {
+  if (analysis.needs_location_check && analysis.location_query) {
     await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Checking location...');
     const userSettings = getUserConfig(userId);
     const hasCoords = userSettings.lat !== undefined && userSettings.lng !== undefined;
@@ -272,7 +263,7 @@ async function handlePlanIntent(ctx: Context, userId: number, transcript: string
   console.log(`[Voice] Plan processed: "${analysis.title}" [${analysis.language}]`);
 }
 
-async function handleQuestionIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {
+export async function handleQuestionIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {
   await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
   const plansData = getAllPlansForLLM(userId);
   const memoryData = JSON.stringify(getUserMemory(userId));
@@ -281,29 +272,52 @@ async function handleQuestionIntent(ctx: Context, userId: number, transcript: st
   await ctx.reply(answer);
 }
 
-async function handleMemoryQueryIntent(ctx: Context, userId: number, statusMsg: any, lang: string) {
+async function handleRescheduleIntent(ctx: Context, userId: number, intentResult: any, statusMsg: any, lang: string) {
   await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
-  const formatted = formatMemoryForDisplay(userId, lang);
-  try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
-  await ctx.reply(formatted);
-}
 
-async function handleRescheduleIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {
-  await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
-  const info = await extractRescheduleInfo(transcript);
-  if (!info || !info.task || !info.newTime) {
+  const taskQuery = intentResult.target_task;
+  const targetTime = intentResult.target_time;
+
+  if (!taskQuery) {
     try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
-    await ctx.reply(lang === 'ru' ? 'Не удалось определить задачу или новое время. Попробуйте: "Перенеси встречу на 17:00"'
-      : lang === 'kk' ? 'Тапсырманы немесе жаңа уақытты анықтау мүмкін болмады.'
-      : 'Could not identify the task or new time. Try: "Move my meeting to 5pm"');
+    await ctx.reply(lang === 'ru' ? 'Не удалось определить задачу для переноса.'
+      : lang === 'kk' ? 'Тапсырманы анықтау мүмкін болмады.'
+      : 'Could not identify the task to reschedule.');
     return;
   }
 
-  const found = findTaskByText(userId, info.task, info.date);
+  // No time specified — find task and enter time-picker flow
+  if (!targetTime) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+    const matches = findTasksByName(userId, taskQuery);
+    if (matches.length === 0) {
+      await ctx.reply(lang === 'ru' ? 'Задача не найдена.'
+        : lang === 'kk' ? 'Тапсырма табылмады.'
+        : 'Task not found.');
+      return;
+    }
+    if (matches.length > 1) {
+      setUserState(userId, { flow: 'reschedule', step: 'picker', pendingTasks: matches });
+      const list = matches.map((m, i) => `${i + 1}. ${m.todo.task} · ${m.todo.time || '—'}`).join('\n');
+      await ctx.reply(lang === 'ru' ? `Найдено несколько задач:\n\n${list}\n\nВведите номер.`
+        : lang === 'kk' ? `Бірнеше тапсырма табылды:\n\n${list}\n\nНөмірін енгізіңіз.`
+        : `Found multiple tasks:\n\n${list}\n\nEnter the number.`);
+      return;
+    }
+    const found = matches[0];
+    setUserState(userId, { flow: 'reschedule', step: 'time', pendingTaskId: found.todo.id });
+    await ctx.reply(lang === 'ru' ? `Найдено: "${found.todo.task}". Укажите новое время (HH:MM).`
+      : lang === 'kk' ? `Табылды: "${found.todo.task}". Жаңа уақытты енгізіңіз (HH:MM).`
+      : `Found: "${found.todo.task}". Enter new time (HH:MM).`);
+    return;
+  }
+
+  // Both task and time specified — reschedule directly
+  const found = findTaskByText(userId, taskQuery, intentResult.target_date);
   if (!found) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
     const allTasks = getUserTasks(userId).filter(t => !t.done);
     const suggestions = allTasks.slice(0, 5).map(t => `"${t.task}"`).join(', ');
-    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
     await ctx.reply(lang === 'ru'
       ? `Задача не найдена. Возможно, вы имели в виду: ${suggestions}`
       : lang === 'kk'
@@ -312,28 +326,21 @@ async function handleRescheduleIntent(ctx: Context, userId: number, transcript: 
     return;
   }
 
-  // Update time
-  const oldTime = found.todo.time;
-  found.todo.time = info.newTime;
-  if (info.date) found.todo.date = info.date;
-
-  // Cancel old reminder, schedule new one
   if (found.todo.id) {
+    updateTaskDateTime(userId, found.todo.id, intentResult.target_date || found.todo.date || '', targetTime);
     cancelReminderByTaskId(found.todo.id);
-    if (ctx.chat) {
-      scheduleReminders(ctx.chat.id, userId, [found.todo], lang);
-    }
+    if (ctx.chat) scheduleReminders(ctx.chat.id, userId, [found.todo], lang);
   }
 
   try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
 
   const offset = getUserConfig(userId).reminder_offset_minutes || 30;
-  const triggerTime = getTriggerTimeStr(info.newTime, offset);
+  const triggerTime = getTriggerTimeStr(targetTime, offset);
   await ctx.reply(lang === 'ru'
-    ? `Moved "${found.todo.task}" to ${info.newTime}. I'll remind you at ${triggerTime}`
+    ? `Перенесено "${found.todo.task}" на ${targetTime}. Напомню в ${triggerTime}`
     : lang === 'kk'
-    ? `"${found.todo.task}" ${info.newTime} ауыстырылды. ${triggerTime} еске саламын`
-    : `Moved "${found.todo.task}" to ${info.newTime}. I'll remind you at ${triggerTime}`);
+    ? `"${found.todo.task}" ${targetTime} ауыстырылды. ${triggerTime} еске саламын`
+    : `Moved "${found.todo.task}" to ${targetTime}. I'll remind you at ${triggerTime}`);
 }
 
 async function handleDeleteIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {
@@ -381,45 +388,17 @@ async function handleDeleteIntent(ctx: Context, userId: number, transcript: stri
   }
 }
 
-async function handleViewIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {
+async function handleCompleteIntent(ctx: Context, userId: number, intentResult: any, statusMsg: any, lang: string) {
   await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
-  const info = await extractViewInfo(transcript);
-  if (!info) {
+  const targetTask = intentResult.target_task;
+  if (!targetTask) {
     try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
-    await ctx.reply(lang === 'ru' ? 'Не удалось определить период.' : lang === 'kk' ? 'Кезеңді анықтау мүмкін болмады.' : 'Could not determine the period.');
+    await ctx.reply(lang === 'ru' ? 'Не удалось определить задачу.'
+      : lang === 'kk' ? 'Тапсырманы анықтау мүмкін болмады.'
+      : 'Could not identify the task.');
     return;
   }
 
-  let dateFilter: string | null = null;
-  const now = new Date();
-
-  if (info.date) {
-    dateFilter = info.date;
-  } else if (info.period === 'today') {
-    dateFilter = now.toISOString().substring(0, 10);
-  } else if (info.period === 'tomorrow') {
-    const tom = new Date(now); tom.setDate(tom.getDate() + 1);
-    dateFilter = tom.toISOString().substring(0, 10);
-  }
-
-  const allPlans = getAllPlansForLLM(userId);
-  try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
-
-  if (!allPlans || allPlans === 'No plans recorded.') {
-    const emptyMsg = lang === 'ru' ? 'Нет планов на этот период.' : lang === 'kk' ? 'Бұл кезеңге жоспарлар жоқ.' : 'No plans for this period.';
-    await ctx.reply(emptyMsg);
-    return;
-  }
-
-  const data = allPlans.length > 3500 ? allPlans.substring(0, 3500) + '...' : allPlans;
-  await ctx.reply(data);
-}
-
-async function handleCompleteIntent(ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {
-  await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
-  const targetTask = transcript;
-
-  // Try to find the task to complete
   const matches = findTasksByName(userId, targetTask);
 
   if (matches.length === 0) {
@@ -480,6 +459,130 @@ async function handleChatIntent(ctx: Context, userId: number, transcript: string
   await ctx.reply(answer);
 }
 
+export async function continueFlow(
+  ctx: Context,
+  userId: number,
+  state: UserState,
+  input: string,
+  statusMsg: any,
+  lang: string
+) {
+  if (statusMsg?.message_id && statusMsg.message_id > 0) {
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+  }
+
+  if (state.flow === 'reschedule') {
+    if (state.step === 'picker') {
+      const idx = parseInt(input.trim()) - 1;
+      const tasks = state.pendingTasks;
+      if (isNaN(idx) || !tasks || idx < 0 || idx >= tasks.length) {
+        await ctx.reply(lang === 'ru' ? 'Неверный номер. Попробуйте снова.'
+          : lang === 'kk' ? 'Қате нөмір. Қайталап көріңіз.'
+          : 'Invalid number. Try again.');
+        return;
+      }
+      const selected = tasks[idx];
+      setUserState(userId, { flow: 'reschedule', step: 'time', pendingTaskId: selected.todo.id });
+      await ctx.reply(lang === 'ru' ? `Выбрано: "${selected.todo.task}". Укажите новое время (HH:MM).`
+        : lang === 'kk' ? `Таңдалды: "${selected.todo.task}". Жаңа уақытты енгізіңіз (HH:MM).`
+        : `Selected: "${selected.todo.task}". Enter new time (HH:MM).`);
+      return;
+    }
+
+    if (state.step === 'time') {
+      const match = input.trim().match(/^(\d{1,2}):(\d{2})$/);
+      if (!match) {
+        await ctx.reply(lang === 'ru' ? 'Неверный формат. Используйте HH:MM (например 15:30).'
+          : lang === 'kk' ? 'Қате формат. HH:MM пайдаланыңыз (мысалы 15:30).'
+          : 'Invalid format. Use HH:MM (e.g. 15:30).');
+        return;
+      }
+      const newTime = `${match[1].padStart(2, '0')}:${match[2]}`;
+      const taskId = state.pendingTaskId;
+      if (taskId) {
+        const tasks = getUserTasks(userId);
+        const task = tasks.find(t => t.id === taskId);
+        if (task) {
+          updateTaskDateTime(userId, taskId, task.date || '', newTime);
+          cancelReminderByTaskId(taskId);
+          if (ctx.chat) scheduleReminders(ctx.chat.id, userId, [task], lang);
+        }
+      }
+      clearUserState(userId);
+      await ctx.reply(lang === 'ru' ? `Время обновлено на ${newTime}.`
+        : lang === 'kk' ? `Уақыт ${newTime} өзгертілді.`
+        : `Time updated to ${newTime}.`);
+      return;
+    }
+  }
+
+  if (state.flow === 'delete') {
+    if (state.step === 'picker') {
+      const idx = parseInt(input.trim()) - 1;
+      const tasks = state.pendingTasks;
+      if (isNaN(idx) || !tasks || idx < 0 || idx >= tasks.length) {
+        await ctx.reply(lang === 'ru' ? 'Неверный номер. Попробуйте снова.'
+          : lang === 'kk' ? 'Қате нөмір. Қайталап көріңіз.'
+          : 'Invalid number. Try again.');
+        return;
+      }
+      const selected = tasks[idx];
+      if (selected.todo.id) {
+        deleteTaskById(userId, selected.todo.id);
+        cancelReminderByTaskId(selected.todo.id);
+      }
+      clearUserState(userId);
+      await ctx.reply(lang === 'ru' ? `Удалено: "${selected.todo.task}"`
+        : lang === 'kk' ? `Жойылды: "${selected.todo.task}"`
+        : `Deleted: "${selected.todo.task}"`);
+      return;
+    }
+  }
+}
+
+export async function routeByIntent(intentResult: any, ctx: Context, userId: number, transcript: string, statusMsg: any, lang: string) {
+  const intent = intentResult.intent;
+  
+  switch (intent) {
+    case 'action':
+      await handlePlanIntent(ctx, userId, transcript, statusMsg, lang);
+      break;
+    
+    case 'query':
+      await handleQuestionIntent(ctx, userId, transcript, statusMsg, lang);
+      break;
+    
+    case 'reschedule':
+      await handleRescheduleIntent(ctx, userId, intentResult, statusMsg, lang);
+      break;
+    
+    case 'delete':
+      await handleDeleteIntent(ctx, userId, transcript, statusMsg, lang);
+      break;
+    
+    case 'complete':
+      await handleCompleteIntent(ctx, userId, intentResult, statusMsg, lang);
+      break;
+    
+    case 'report':
+      await handleCommandIntent(ctx, userId, { ...intentResult, command: 'report_pdf' }, statusMsg, lang);
+      break;
+    
+    case 'clear':
+      await handleCommandIntent(ctx, userId, { command: 'clear' }, statusMsg, lang);
+      break;
+    
+    case 'summary':
+      await handleSummaryIntent(ctx, userId, intentResult, statusMsg, lang);
+      break;
+    
+    case 'social':
+      try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+      await ctx.reply(lang === 'ru' ? 'Готов слушать.' : lang === 'kk' ? 'Тыңдауға дайынмын.' : 'Ready to listen.');
+      break;
+  }
+}
+
 function getTriggerTimeStr(time: string, offsetMinutes: number): string {
   const [h, m] = time.split(':').map(Number);
   const d = new Date();
@@ -491,8 +594,16 @@ async function handleCommandIntent(ctx: Context, userId: number, intentResult: a
   try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
   const command = intentResult.command;
   
-  if (command === 'report') {
-    const tasks = getUserTasks(userId);
+  if (command === 'report' || command === 'report_pdf') {
+    const hasFilters = intentResult.target_date || intentResult.target_time || intentResult.after_time || intentResult.priority_filter;
+    const tasks = hasFilters
+      ? getTasksFiltered(userId, {
+          date: intentResult.target_date ?? null,
+          beforeTime: intentResult.target_time ?? null,
+          afterTime: intentResult.after_time ?? null,
+          priority: intentResult.priority_filter ?? null,
+        })
+      : getUserTasks(userId);
     if (tasks.length === 0) {
       await ctx.reply(lang === 'ru' ? 'Задач пока нет.' : lang === 'kk' ? 'Тапсырмалар жоқ.' : 'No tasks recorded yet.');
       return;
@@ -503,7 +614,7 @@ async function handleCommandIntent(ctx: Context, userId: number, intentResult: a
       try { await ctx.api.deleteMessage(ctx.chat!.id, waitMsg.message_id); } catch {}
       await ctx.replyWithDocument(new InputFile(pdfBuf, `report_${userId}_${Date.now()}.pdf`), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
     } catch (err) {
-      const report = generateFullReport(tasks, lang);
+      const report = await generateFullReport(tasks, lang);
       await ctx.api.editMessageText(ctx.chat!.id, waitMsg.message_id, report, { reply_markup: getNavKeyboard(lang) });
     }
   } else if (command === 'weekly') {

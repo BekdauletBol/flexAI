@@ -54,36 +54,33 @@ export function buildConflictMessage(
   const lines: string[] = [];
 
   if (language === 'ru') {
-    lines.push('КОНФЛИКТ');
-    lines.push('');
-    lines.push('У вас уже запланировано на это время:');
+    lines.push(`КОНФЛИКТ — ${conflicts.length === 1 ? '' : conflicts.length + ' '}`);
   } else if (language === 'kk') {
-    lines.push('ҚАЙШЫЛЫҚ');
-    lines.push('');
-    lines.push('Бұл уақытта бұрыннан жоспарланған:');
+    lines.push(`ҚАЙШЫЛЫҚ — ${conflicts.length === 1 ? '' : conflicts.length + ' '}`);
   } else {
-    lines.push('CONFLICT DETECTED');
-    lines.push('');
-    lines.push('You have an existing plan at this time:');
+    lines.push(`CONFLICT — ${conflicts.length === 1 ? '' : conflicts.length + ' tasks'}`);
   }
 
   lines.push('');
+
+  const existingLabel = language === 'ru' ? 'СУЩЕСТВУЮЩИЙ' : language === 'kk' ? 'БАР' : 'EXISTING';
+  const newLabel = language === 'ru' ? 'НОВЫЙ' : language === 'kk' ? 'ЖАҢА' : 'NEW';
 
   for (const c of conflicts) {
-    let existing = `— ${c.existingTodo.task}`;
-    if (c.existingTodo.time) existing += ` · ${c.existingTodo.time}`;
-    lines.push(existing);
-
-    let incoming = `  with: ${c.newTodo.task}`;
-    if (c.newTodo.time) incoming += ` · ${c.newTodo.time}`;
-    lines.push(incoming);
+    lines.push(`${existingLabel}:`);
+    lines.push(`— ${c.existingTodo.task}${c.existingTodo.time ? ' · ' + c.existingTodo.time : ''}`);
+    lines.push(`${newLabel}:`);
+    lines.push(`— ${c.newTodo.task}${c.newTodo.time ? ' · ' + c.newTodo.time : ''}`);
+    lines.push('');
   }
 
-  lines.push('');
-
-  if (language === 'ru') lines.push('Перенести или оставить оба?');
-  else if (language === 'kk') lines.push('Жылжыту немесе екеуін де қалдыру?');
-  else lines.push('Reschedule, or keep both?');
+  if (language === 'ru') {
+    lines.push('Что делать?');
+  } else if (language === 'kk') {
+    lines.push('Не істеу керек?');
+  } else {
+    lines.push('What to do?');
+  }
 
   return lines.join('\n');
 }
@@ -103,9 +100,14 @@ export function buildCombinedConflictMessage(conflicts: Conflict[], language: st
 
   lines.push('');
 
+  const existingLabel = language === 'ru' ? 'СУЩЕСТВУЮЩИЙ' : language === 'kk' ? 'БАР' : 'EXISTING';
+  const newLabel = language === 'ru' ? 'НОВЫЙ' : language === 'kk' ? 'ЖАҢА' : 'NEW';
   for (const c of conflicts) {
-    let line = `— ${c.newTodo.task} · ${c.newTodo.time}  conflicts with  ${c.existingTodo.task} · ${c.existingTodo.time}`;
+    let line = `${existingLabel}: ${c.existingTodo.task} · ${c.existingTodo.time}`;
     lines.push(line);
+    line = `${newLabel}: ${c.newTodo.task} · ${c.newTodo.time}`;
+    lines.push(line);
+    lines.push('');
   }
 
   lines.push('');
@@ -123,10 +125,12 @@ export function buildCombinedConflictMessage(conflicts: Conflict[], language: st
 
 export function getConflictKeyboard(pendingId: string, language: string): InlineKeyboard {
   const keepLabel = language === 'ru' ? 'Оставить оба' : language === 'kk' ? 'Екеуін де қалдыру' : 'Keep both';
-  const reschedLabel = language === 'ru' ? 'Перенести' : language === 'kk' ? 'Жылжыту' : 'Reschedule';
+  const skipLabel = language === 'ru' ? 'Пропустить новый' : language === 'kk' ? 'Жаңасын өткізіп жіберу' : 'Skip new';
+  const reschedLabel = language === 'ru' ? 'Перенести новый' : language === 'kk' ? 'Жаңасын жылжыту' : 'Reschedule new';
   
   return new InlineKeyboard()
     .text(keepLabel, `conflict_keep_${pendingId}`)
+    .text(skipLabel, `conflict_skip_${pendingId}`)
     .text(reschedLabel, `conflict_reschedule_${pendingId}`);
 }
 

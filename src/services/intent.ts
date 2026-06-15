@@ -21,49 +21,116 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 export interface IntentResult {
-  intent: 'action' | 'query' | 'memory_query' | 'reschedule' | 'delete' | 'complete' | 'view' | 'chat' | 'command' | 'social' | 'summary';
+  intent: 'action' | 'query' | 'reschedule' | 'delete' | 'complete' | 'report' | 'clear' | 'summary' | 'social';
   confidence: number;
   target_task?: string;
-  period?: 'today' | 'tomorrow' | 'week' | 'all' | string;
-  command?: 'report' | 'weekly' | 'clear' | 'language';
+  target_date?: string;
+  target_time?: string;
+  after_time?: string;
+  priority_filter?: 'high' | 'medium' | 'low';
+  period?: 'today' | 'tomorrow' | 'week' | 'month' | 'all' | string;
   command_arg?: string;
 }
 
-const SYSTEM_PROMPT = `You are an intent classifier for a voice task bot. The user speaks naturally. Determine their intent and return ONLY JSON:
+const SYSTEM_PROMPT = `You are a routing assistant for a personal secretary bot.
 
+Your job: classify the user's voice transcript into exactly ONE intent.
+
+INTENTS:
+
+"action" — user is dictating new tasks, plans, or reminders to save.
+Examples:
+- "завтра в 9 утра встреча с командой"
+- "напомни мне купить молоко"
+- "запланируй тренировку на пятницу в 7 утра"
+- "на следующей неделе нужно сдать отчёт"
+
+"query" — user is asking about their existing schedule.
+Examples:
+- "какие у меня планы на завтра"
+- "что у меня есть на этой неделе"
+- "есть ли у меня что-то в пятницу"
+- "покажи мои задачи на сегодня"
+- "what do I have tomorrow"
+
+"reschedule" — user wants to move an existing task to a different time or date.
+Examples:
+- "перенеси встречу с командой на пятницу"
+- "сдвинь тренировку на час позже"
+- "перенеси дантиста на следующую неделю"
+- "move the dentist appointment to 3pm"
+- "передвинь встречу"
+
+"delete" — user wants to remove a task.
+Examples:
+- "удали встречу с командой"
+- "отмени ужин сегодня вечером"
+- "убери задачу купить билеты"
+- "cancel the dentist appointment"
+
+CRITICAL RULE:
+If the user says "убери", "удали", "отмени", "убрать", "удалить", "remove", "delete", "cancel" + a task name → intent is ALWAYS "delete".
+NEVER create a new task from a delete request.
+Even if the sentence is complex: "убери задачу X после того как Y" → delete intent, target_task: "X"
+
+"complete" — user is saying they finished something.
+Examples:
+- "я выполнил задачу купить билеты"
+- "встреча с командой прошла"
+- "отметь тренировку как выполненную"
+- "done with the report"
+
+"report" — user wants to see their task list or a PDF report.
+Examples:
+- "покажи мой отчёт"
+- "скинь пдф с задачами"
+- "дай недельный отчёт"
+- "show my report"
+- "weekly report"
+- "все мои задачи"
+- "скинь задачи только до 17:00" → report, target_time: "17:00"
+- "отчёт только на утро" → report, target_time: "12:00"
+- "покажи только высокий приоритет" → report, priority_filter: "high"
+- "задачи только на сегодня" → report, target_date: today
+
+"clear" — user wants to delete completed tasks.
+Examples:
+- "очисти выполненные"
+- "удали всё что сделано"
+- "clear done tasks"
+
+"summary" — user wants a quick stats overview.
+Examples:
+- "сколько у меня задач"
+- "как мои дела на этой неделе"
+- "how many tasks do I have"
+
+"social" — greeting, thanks, small talk, no actionable request.
+Examples:
+- "привет"
+- "спасибо"
+- "окей"
+- "как дела"
+
+RULES:
+- If the user says "передвинь X" or "перенеси X" → ALWAYS "reschedule", never "action"
+- If the user asks a question about their schedule → ALWAYS "query", never "action"  
+- If the user says they completed/finished something → ALWAYS "complete", never "action"
+- Default to "action" ONLY when user is clearly dictating new plans
+- When in doubt between "action" and another intent → choose the other intent
+
+Return ONLY this JSON:
 {
-  "intent": "action" | "query" | "memory_query" | "reschedule" | "delete" | "complete" | "view" | "chat" | "command" | "social" | "summary",
+  "intent": "action|query|reschedule|delete|complete|report|clear|summary|social",
   "confidence": 0.0-1.0,
-  "target_task": "task name the user wants to delete/complete (extract verbatim) or null",
-  "period": "today" | "tomorrow" | "week" | "all" | null,
-  "command": "report" | "weekly" | "clear" | "language" | null,
-  "command_arg": "language code: ru/en/kk, or null"
-}
-
-INTENT DEFINITIONS:
-action       — user is describing tasks/plans/todos to create ("запланируй", "сделать", "нужно", schedule)
-query        — asking about existing plans/tasks ("что у меня", "when do I", "что запланировано")
-memory_query — asking what the bot remembers about them
-reschedule   — asking to move a task to a different time ("перенеси", "передвинь", move)
-delete       — asking to delete a task ("удали", "отмени", remove)
-complete     — marking a task as done ("выполнил", "сделал", "готово", done)
-view         — asking to see plans for a day/period ("покажи", show)
-chat         — general conversation, question unrelated to planning
-command      — bot control by voice ("покажи задачи" -> report, "очисти выполненные" -> clear, "еженедельный отчет" -> weekly, "смени язык на английский" -> language + arg "en")
-social       — greeting, thanks, small talk ("привет", "спасибо", "как дела", hi)
-summary      — asking for overall status/stats ("сколько задач", "статистика", summary)
-
-EXAMPLES:
-"удали встречу с командой"                    -> {"intent":"delete", "target_task":"встречу с командой"}
-"я выполнил задачу купить билеты"             -> {"intent":"complete", "target_task":"купить билеты"}
-"сколько у меня задач на сегодня?"            -> {"intent":"summary", "period":"today"}
-"покажи все мои задачи"                       -> {"intent":"command", "command":"report"}
-"очисти выполненные"                          -> {"intent":"command", "command":"clear"}
-"weekly report"                               -> {"intent":"command", "command":"weekly"}
-"смени язык на русский"                       -> {"intent":"command", "command":"language", "command_arg":"ru"}
-"перенеси тренировку на 9 утра"               -> {"intent":"reschedule"}
-"какие планы на пятницу?"                     -> {"intent":"view"}
-"отмени ужин в 20:00"                         -> {"intent":"delete", "target_task":"ужин"}`;
+  "target_task": "task name mentioned, or null",
+  "target_date": "YYYY-MM-DD or relative word like tomorrow/friday, or null",
+  "target_time": "HH:MM or null",
+  "after_time": "HH:MM filter for tasks after this time, or null",
+  "priority_filter": "high|medium|low or null",
+  "period": "today|tomorrow|week|month|all or null",
+  "command_arg": "language code if language change, or null"
+}`;
 
 export async function detectIntent(transcript: string): Promise<IntentResult> {
   console.log('[Intent] Starting detectIntent, model:', config.openaiModel, 'baseURL:', config.openaiBaseUrl);

@@ -1,5 +1,5 @@
 import { logger } from '../logger.js';
-import { Bot } from 'grammy';
+import { Bot, InlineKeyboard } from 'grammy';
 import { TodoItem } from '../types/analysis.js';
 import { getUserConfig } from './userConfig.js';
 import { getPlan } from './planStore.js';
@@ -14,9 +14,10 @@ interface ScheduledReminder {
   notified: boolean;
   language: string;
   offsetMinutes: number;
+  snoozedUntil?: number;
 }
 
-const reminders: ScheduledReminder[] = [];
+export const reminders: ScheduledReminder[] = [];
 let bot: Bot | null = null;
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
@@ -122,22 +123,28 @@ export function scheduleReminders(chatId: number, userId: number, todos: TodoIte
   }
 }
 
-<<<<<<< HEAD
-export function rescheduleReminder(chatId: number, taskId: string, task: string, newTime: string, language: string) {
-  const now = new Date();
-  const offset = 30;
-  const eventTime = new Date(newTime);
-  if (isNaN(eventTime.getTime())) return;
+function parseTimeString(timeStr: string): Date | null {
+  const match = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+  if (match) {
+    const hours = parseInt(match[1]);
+    const minutes = parseInt(match[2]);
+    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
+      const d = new Date();
+      d.setHours(hours, minutes, 0, 0);
+      return d;
+    }
+  }
+  const d = new Date(timeStr);
+  return isNaN(d.getTime()) ? null : d;
+}
 
-=======
 /** Reschedule a single reminder (e.g. from the Mini App). */
 export function rescheduleReminder(chatId: number, taskId: string, task: string, newTime: string, language: string, overrideOffset?: number) {
   const now = new Date();
-  const eventTime = getEventTimeToday(newTime);
+  const eventTime = parseTimeString(newTime);
   if (!eventTime) return;
 
   const offset = overrideOffset !== undefined ? overrideOffset : 30;
->>>>>>> 65a7f64 (add some features)
   const triggerAt = eventTime.getTime() - offset * 60 * 1000;
 
   const reminder: ScheduledReminder = {
@@ -170,6 +177,34 @@ export function updateReminderOffsets(chatId: number, offsetMinutes: number) {
   }
 }
 
+export function snoozeReminder(taskId: string, minutes: number) {
+  const reminder = reminders.find(r => r.taskId === taskId);
+  if (reminder) {
+    reminder.triggerAt = Date.now() + minutes * 60 * 1000;
+    reminder.notified = false;
+    reminder.snoozedUntil = reminder.triggerAt;
+    logger.info(`[Scheduler] Snoozed reminder for "${reminder.task}" by ${minutes} min`);
+    return reminder;
+  }
+  return undefined;
+}
+
+export function snoozeReminderUntilMorning(taskId: string, language: string) {
+  const reminder = reminders.find(r => r.taskId === taskId);
+  if (reminder) {
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    reminder.triggerAt = tomorrow.getTime();
+    reminder.notified = false;
+    reminder.snoozedUntil = reminder.triggerAt;
+    logger.info(`[Scheduler] Snoozed reminder for "${reminder.task}" until tomorrow morning`);
+    return reminder;
+  }
+  return undefined;
+}
+
 async function checkReminders() {
   if (!bot) return;
   const now = Date.now();
@@ -188,17 +223,30 @@ async function checkReminders() {
     }
 
     r.notified = true;
-    
-    // Use origin/main's cleaner format
+
     const msgs: Record<string, string> = {
-      en: `Reminder\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
-      ru: `Напоминание\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
-      kk: `Еске салу\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
+      en: `REMINDER\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
+      ru: `НАПОМИНАНИЕ\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
+      kk: `ЕСКЕ САЛУ\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
     };
     const text = msgs[r.language] || msgs.en;
 
+    const snooze10 = r.language === 'ru' ? '+10 мин' : r.language === 'kk' ? '+10 мин' : '+10 min';
+    const snooze30 = r.language === 'ru' ? '+30 мин' : r.language === 'kk' ? '+30 мин' : '+30 min';
+    const snooze60 = r.language === 'ru' ? '+1 час' : r.language === 'kk' ? '+1 сағ' : '+1 hour';
+    const snoozeTmrw = r.language === 'ru' ? 'Завтра утром' : r.language === 'kk' ? 'Ертең таңертең' : 'Tomorrow morning';
+    const doneLabel = r.language === 'ru' ? 'Готово ✓' : r.language === 'kk' ? 'Дайын ✓' : 'Done ✓';
+
+    const keyboard = new InlineKeyboard()
+      .text(snooze10, `snz_10_${r.taskId || '0'}`)
+      .text(snooze30, `snz_30_${r.taskId || '0'}`)
+      .text(snooze60, `snz_60_${r.taskId || '0'}`)
+      .row()
+      .text(snoozeTmrw, `snz_tmrw_${r.taskId || '0'}`)
+      .text(doneLabel, `snz_done_${r.taskId || '0'}`);
+
     try {
-      await bot.api.sendMessage(r.chatId, text);
+      await bot.api.sendMessage(r.chatId, text, { reply_markup: keyboard });
       logger.info(`[Scheduler] Sent reminder: "${r.task}" at ${r.timeStr}`);
     } catch (err) {
       logger.error(err, '[Scheduler] Failed to send reminder');

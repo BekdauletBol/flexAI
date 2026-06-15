@@ -7,7 +7,7 @@ const isGitHubModels = openaiApiKey.startsWith('ghp_') || openaiApiKey.startsWit
 export const config = {
   telegramToken: process.env.TELEGRAM_BOT_TOKEN || '',
   openaiApiKey,
-  openaiModel: process.env.OPENAI_MODEL || 'gpt-4o',
+  openaiModel: process.env.OPENAI_MODEL || 'openai/gpt-4.1',
   openaiBaseUrl: isGitHubModels ? 'https://models.inference.ai.azure.com' : undefined,
   isGitHubModels,
   groqApiKey: process.env.GROQ_API_KEY || '',
