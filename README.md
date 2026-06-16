@@ -47,7 +47,7 @@ npm run dev
 | Var | Required | Description |
 |-----|----------|-------------|
 | TELEGRAM_BOT_TOKEN | yes | From @BotFather |
-| OPENAI_API_KEY | yes | OpenAI key or GitHub PAT (`ghp_...`) |
+| OPENAI_API_KEY | yes | OpenAI key |
 | GROQ_API_KEY | yes | Groq Whisper |
 | ADMIN_TELEGRAM_ID | yes | Your Telegram ID for `/stats` |
 | TELEGRAM_BOT_API_SECRET_TOKEN | yes | Arbitrary string for webhook security |
