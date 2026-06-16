@@ -11,7 +11,7 @@ primary_region = 'lhr'
 cmd = 'node dist/index.js'
 
 [env]
-  PORT = '3000'
+  PORT = '8080'
   NODE_ENV = 'production'
   # Fly mounts persistent storage at /data, so keep the SQLite DB there.
   FLEXAI_DB_PATH = '/data/flexai.db'

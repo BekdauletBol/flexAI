@@ -17,8 +17,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 
 # Install all dependencies (including devDependencies for build)
-RUN npm ci --ignore-scripts
-
+RUN npm ci
+RUN npm rebuild better-sqlite3
 # Copy source code
 COPY tsconfig.json ./
 COPY src ./src

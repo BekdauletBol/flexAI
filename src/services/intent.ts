@@ -67,6 +67,15 @@ DELETE — ONLY if message contains: удали, убери, отмени, уд�
 
 RESCHEDULE — ONLY if message contains: перенеси, передвинь, сдвинь, перенести, reschedule, move
 
+TARGET TASK EXTRACTION (critical for reschedule/complete/delete):
+- For "reschedule", "complete", and "delete" intents, you MUST extract the task name the user refers to and put it in "target_task".
+- Preserve foreign terms, acronyms, brand names, and mixed-language phrases exactly as spoken.
+  Examples: "CJM customer journey map", "UX review", "API integration", "Zoom call", "Notion", "Figma".
+- If the user says "перенеси встречу на 5", target_task = "встреча".
+- If the user says "complete the API task", target_task = "API task".
+- If the user says "удали CJM customer journey map", target_task = "CJM customer journey map".
+- If the task is unclear, set target_task to the exact noun phrase the user mentioned after the action verb.
+
 For "report" intents, set these fields:
   target_date — specific date mentioned (YYYY-MM-DD)
   target_time — specific time filter (HH:MM)
@@ -84,6 +93,7 @@ Return ONLY this JSON:
 {
   "intent": "action|query|reschedule|delete|complete|report|clear|summary|social",
   "confidence": 0.0-1.0,
+  "target_task": "task name or null",
   "target_date": "YYYY-MM-DD or null",
   "target_time": "HH:MM or null",
   "after_time": "HH:MM or null",
@@ -91,6 +101,17 @@ Return ONLY this JSON:
   "date_to": "YYYY-MM-DD or null",
   "date_ranges": [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}]
 }`;
+
+export function detectTranscriptLanguage(transcript: string): 'ru' | 'kk' | 'en' {
+  const text = transcript.toLowerCase();
+  // Kazakh-specific Cyrillic characters
+  const kazakhChars = /[әіңғүұқөһ]/;
+  if (kazakhChars.test(text)) return 'kk';
+  // General Cyrillic characters
+  const cyrillicChars = /[а-яё]/;
+  if (cyrillicChars.test(text)) return 'ru';
+  return 'en';
+}
 
 export function quickIntentOverride(transcript: string): Partial<IntentResult> | null {
   const lower = transcript.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -216,7 +237,7 @@ export async function extractRescheduleInfo(transcript: string): Promise<Resched
     const response = await withTimeout(llm.chat.completions.create({
       model: MODEL,
       messages: [
-        { role: 'system', content: `Extract reschedule information. Today is ${dateStr}. Return ONLY JSON: { "task": "task description to find", "newTime": "HH:MM", "date": "YYYY-MM-DD or null if today" }` },
+        { role: 'system', content: `Extract reschedule information. Today is ${dateStr}. Preserve foreign terms, acronyms, and brand names verbatim in the task description. Return ONLY JSON: { "task": "task description to find", "newTime": "HH:MM", "date": "YYYY-MM-DD or null if today" }` },
         { role: 'user', content: transcript },
       ],
       response_format: { type: 'json_object' },
@@ -244,7 +265,7 @@ export async function extractDeleteInfo(transcript: string): Promise<DeleteExtra
     const response = await withTimeout(llm.chat.completions.create({
       model: MODEL,
       messages: [
-        { role: 'system', content: `Extract delete information. Today is ${dateStr}. Return ONLY JSON: { "type": "task" | "day", "task": "task name if type=task", "date": "YYYY-MM-DD date to delete if type=day, or null" }` },
+        { role: 'system', content: `Extract delete information. Today is ${dateStr}. Preserve foreign terms, acronyms, and brand names verbatim in the task name. Return ONLY JSON: { "type": "task" | "day", "task": "task name if type=task", "date": "YYYY-MM-DD date to delete if type=day, or null" }` },
         { role: 'user', content: transcript },
       ],
       response_format: { type: 'json_object' },

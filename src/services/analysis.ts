@@ -34,6 +34,12 @@ LANGUAGE RULE (critical):
 - Kazakh transcript → respond in Kazakh
 - Mixed → use the dominant language
 
+PRESERVE FOREIGN TERMS (critical):
+- Keep acronyms, brand names, product names, and English technical terms exactly as spoken.
+- Examples: "CJM customer journey map", "UX review", "API integration", "Zoom call", "Notion", "Figma", "MVP", "KPI".
+- Do NOT translate these into Russian or Kazakh. Write them verbatim in the task description.
+- If the user says "сделать CJM customer journey map", the task must be "Сделать CJM customer journey map".
+
 Return ONLY a JSON object in this EXACT format:
 {
   "title": "Short title (5-7 words)",
@@ -134,7 +140,7 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
         const retryResponse = await withTimeout(llm.chat.completions.create({
           model: MODEL,
           messages: [
-            { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), duration (number, default 30). Extract EVERY task mentioned, do not skip any. Language: same as transcript.` + contextPrompt },
+            { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), duration (number, default 30). Extract EVERY task mentioned, do not skip any. Preserve foreign terms, acronyms, and brand names verbatim. Language: same as transcript.` + contextPrompt },
             { role: 'user', content: transcript },
           ],
           response_format: { type: 'json_object' },

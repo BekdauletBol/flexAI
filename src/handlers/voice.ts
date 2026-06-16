@@ -9,7 +9,7 @@ import { searchPlace, getWeatherForecast, getDirections, generateLocationAdvice 
 import { savePending, setUserFlowState, clearUserFlowState, getUserState, setUserState, clearUserState, UserState } from '../services/pendingStore.js';
 import { buildConflictMessage, buildCombinedConflictMessage, getConflictKeyboard, getCombinedConflictKeyboard, getSingleConflictKeyboard, getNavKeyboard } from '../services/messages.js';
 import { startDeliveryFlow } from '../services/delivery.js';
-import { detectIntent, askQuestion, chatReply, extractDeleteInfo, extractMemoryUpdate, quickIntentOverride } from '../services/intent.js';
+import { detectIntent, askQuestion, chatReply, extractDeleteInfo, extractMemoryUpdate, quickIntentOverride, detectTranscriptLanguage } from '../services/intent.js';
 import { getUserMemory, updateUserMemory } from '../services/memoryStore.js';
 import { generateReportPdf, generateMultiDateReportPdf } from '../services/pdf.js';
 import { TodoItem } from '../types/analysis.js';
@@ -326,7 +326,11 @@ export async function handleVoice(ctx: Context) {
       await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Could not recognize speech.');
       return;
     }
-    const lang = getUserConfig(userId).language || 'en';
+    const configuredLang = getUserConfig(userId).language;
+    const detectedLang = detectTranscriptLanguage(transcript);
+    // Priority: explicit /language choice, then dominant spoken language, then English
+    const lang = configuredLang || detectedLang || 'en';
+    console.log('[Voice] Language:', { configured: configuredLang, detected: detectedLang, used: lang });
 
     // Clean up expired pending image data
     for (const [uid, data] of pendingImageTasks) {
