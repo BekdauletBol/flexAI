@@ -995,7 +995,7 @@ bot.callbackQuery(/^img_cancel_(\d+)$/, async (ctx) => {
 
 bot.on('message:voice', async (ctx) => {
   const userId = ctx.from?.id ?? 0;
-  await ctx.reply('Processing ⏳');
+  await ctx.reply('Processing');
   await voiceQueue.add(async () => {
     const start = Date.now();
     try {
