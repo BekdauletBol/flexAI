@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+    volumes:
+      - ./data:/app/data
+      - ./temp:/app/temp
+    restart: unless-stopped
+    stop_grace_period: 15s
