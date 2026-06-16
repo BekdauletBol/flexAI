@@ -3,7 +3,7 @@ import path from 'path';
 import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config.js';
 import { handleVoice, handlePlanIntent, handleQuestionIntent, routeByIntent, continueFlow } from './handlers/voice.js';
-import { handleImage } from './handlers/image.js';
+import { handleImage, saveTasksToPlan, pendingImageTasks } from './handlers/image.js';
 import { initScheduler } from './services/scheduler.js';
 import { createServer, resetStartTime } from './server.js';
 import { setUserLanguage, getUserConfig, setUserLocation, setReminderOffset } from './services/userConfig.js';
@@ -936,49 +936,49 @@ bot.callbackQuery(/^snz_(\d+|tmrw|done)_(.+)$/, async (ctx) => {
 
 // ─── Image Confirmation Callbacks ──────────────────────────────────────────────
 
-bot.callbackQuery(/^img_confirm_(.+)$/, async (ctx) => {
-  const pendingId = ctx.match[1];
-  const { getPending, deletePending } = await import('./services/pendingStore.js');
-  const pending = getPending(pendingId);
-  if (!pending) {
-    await ctx.answerCallbackQuery('Expired.');
+bot.callbackQuery(/^img_add_all_(\d+)$/, async (ctx) => {
+  const userId = parseInt(ctx.match[1], 10);
+  const tasks = pendingImageTasks.get(userId);
+
+  if (!tasks) {
+    await ctx.answerCallbackQuery('Session expired. Send the screenshot again.');
     return;
   }
+
   await ctx.answerCallbackQuery();
 
-  const lang = pending.analysis.language;
-  if (ctx.chat) {
-    savePlan(ctx.chat.id, pending.userId, pending.analysis);
-    const timedTasks = pending.analysis.todos.filter(t => t.time);
-    if (timedTasks.length > 0) {
-      scheduleReminders(ctx.chat.id, pending.userId, pending.analysis.todos, lang);
-    }
-  }
+  const saved = await saveTasksToPlan(ctx, userId, tasks);
+  pendingImageTasks.delete(userId);
 
-  if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
-  }
-
-  await startDeliveryFlow(ctx, pending);
+  const taskList = tasks.map(t => `— ${t.task}${t.time ? ' · ' + t.time : ''}`).join('\n');
+  await ctx.editMessageText(`СОХРАНЕНО\n\n${taskList}\n\n${saved} задач добавлено.`);
 });
 
-bot.callbackQuery(/^img_cancel_(.+)$/, async (ctx) => {
-  const pendingId = ctx.match[1];
-  const { getPending, deletePending } = await import('./services/pendingStore.js');
-  const pending = getPending(pendingId);
-  if (!pending) {
-    await ctx.answerCallbackQuery('Expired.');
+bot.callbackQuery(/^img_select_(\d+)$/, async (ctx) => {
+  const userId = parseInt(ctx.match[1], 10);
+  const tasks = pendingImageTasks.get(userId);
+
+  if (!tasks) {
+    await ctx.answerCallbackQuery('Session expired.');
     return;
   }
+
   await ctx.answerCallbackQuery();
 
-  const lang = pending.analysis.language;
-  const msg = lang === 'ru' ? 'Отменено.' : lang === 'kk' ? 'Болдырылмады.' : 'Cancelled.';
+  const preview = tasks
+    .map((t, i) => `${i + 1}. ${t.task}${t.time ? ' · ' + t.time : ''}`)
+    .join('\n');
 
-  if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
-  }
-  await ctx.reply(msg);
+  await ctx.editMessageText(
+    `Выбери задачи (например: 1,3,5 или 2-4):\n\n${preview}\n\nОтправь номера в чат.`
+  );
+});
+
+bot.callbackQuery(/^img_cancel_(\d+)$/, async (ctx) => {
+  const userId = parseInt(ctx.match[1], 10);
+  pendingImageTasks.delete(userId);
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText('Отменено.');
 });
 
 // ─── Message handlers ─────────────────────────────────────────────────────────
@@ -1155,9 +1155,39 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
-  // No active flow — route through same intent pipeline as voice
+  // Image task selection flow
+  const pendingTasks = pendingImageTasks.get(userId);
   const text = ctx.message.text;
   const lang = getLang(userId);
+
+  if (pendingTasks) {
+    const rangeMatch = text.match(/^(\d+(?:\s*[,.-]\s*\d+)*)$/);
+    const dashRange = text.match(/^(\d+)\s*[-–]\s*(\d+)$/);
+    if (rangeMatch || dashRange) {
+      const indices: number[] = [];
+      if (dashRange) {
+        const from = parseInt(dashRange[1], 10);
+        const to = parseInt(dashRange[2], 10);
+        for (let i = from; i <= to; i++) indices.push(i - 1);
+      } else {
+        const parts = text.split(/[,.\s]+/).filter(Boolean);
+        for (const p of parts) {
+          const n = parseInt(p, 10);
+          if (!isNaN(n) && n > 0 && n <= pendingTasks.length) indices.push(n - 1);
+        }
+      }
+      const selected = indices.map(i => pendingTasks[i]).filter(Boolean);
+      if (selected.length > 0) {
+        const saved = await saveTasksToPlan(ctx, userId, selected);
+        pendingImageTasks.delete(userId);
+        const taskList = selected.map(t => `— ${t.task}${t.time ? ' · ' + t.time : ''}`).join('\n');
+        await ctx.reply(`СОХРАНЕНО\n\n${taskList}\n\n${saved} задач добавлено.`);
+        return;
+      }
+    }
+  }
+
+  // No active flow — route through same intent pipeline as voice
   const statusMsgId = (await ctx.reply('Analyzing...')).message_id;
   try {
     const intentResult = await detectIntent(text);
