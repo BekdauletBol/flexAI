@@ -1,14 +1,61 @@
+version: "3.8"
+
 services:
-  app:
-    build: .
+  flexai:
+    container_name: flexai-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flexai:latest
     ports:
       - "3000:3000"
-    env_file: .env
+    env_file:
+      - .env
     environment:
       - NODE_ENV=production
       - LOG_LEVEL=info
+      - PORT=3000
+      - FLEXAI_DB_PATH=/app/data/flexai.db
     volumes:
+      # Persistent database storage
       - ./data:/app/data
+      # Temporary files (voice/images)
       - ./temp:/app/temp
+      # Optional: logs if you want to persist them
+      - ./logs:/app/logs
     restart: unless-stopped
     stop_grace_period: 15s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:3000/health",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - flexai-network
+    # Resource limits (optional but recommended for production)
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+networks:
+  flexai-network:
+    driver: bridge
+
+volumes:
+  data:
+  temp:
+  logs:
