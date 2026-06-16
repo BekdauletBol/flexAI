@@ -38,6 +38,14 @@ function fmtDate(d: Date): string {
   return `${mo[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
 }
 
+function formatDate(dateStr: string, lang: string): string {
+  const date = new Date(dateStr + 'T12:00:00');
+  return date.toLocaleDateString(
+    lang === 'ru' ? 'ru-RU' : 'en-US',
+    { day: 'numeric', month: 'long' }
+  );
+}
+
 function drawBg(doc: PDFKit.PDFDocument) {
   doc.save().rect(0, 0, PAGE_W, PAGE_H).fill(BG).restore();
 }
@@ -154,8 +162,7 @@ export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
         if (y > MAX_Y - 20) { doc.addPage(); y = M; }
         
         doc.font('Regular').fontSize(14).fillColor(TEXT_PRI);
-        doc.text('—', M, y, { continued: true, width: CW });
-        doc.text(`  ${t.task}`);
+        doc.text(t.task, M, y, { width: CW });
         y = doc.y + 6;
       }
       y += 10;
@@ -272,20 +279,16 @@ export async function generateReportPdf(tasks: TodoItem[], language: string): Pr
                          : (isRu ? 'НИЗКИЙ' : isKk ? 'ТӨМЕН' : 'LOW');
         const timeStr = todo.time ? `  ${todo.time}` : '';
         const locationStr = todo.location ? `  ${todo.location}` : '';
-        const dateStr = todo.date ? `  ${todo.date}` : '';
+        const dateStr = todo.date ? `  ${formatDate(todo.date, language)}` : '';
 
         // Row background
         doc.save().roundedRect(M, yy - 1, CW, 22, 4).fillOpacity(1).fill(CARD_BG).restore();
         doc.save().roundedRect(M, yy - 1, CW, 22, 4).lineWidth(1).strokeColor(BORDER).stroke().restore();
 
-        // Status indicator
-        doc.font('Regular').fontSize(12).fillColor(todo.done ? PRI_LOW : TEXT_SEC);
-        doc.text(todo.done ? '✓' : '○', M + 8, yy + 3, { width: 14 });
-
         // Task name + metadata
         doc.font('Regular').fontSize(12).fillColor(TEXT_PRI);
         const meta = `${todo.task}${timeStr}${locationStr}${dateStr}`;
-        doc.text(meta, M + 24, yy + 3, { width: CW * 0.65 });
+        doc.text(meta, M + 8, yy + 3, { width: CW * 0.65 });
 
         // Priority badge
         doc.font('Bold').fontSize(9).fillColor(pColor);
@@ -319,6 +322,90 @@ export async function generateReportPdf(tasks: TodoItem[], language: string): Pr
       ? `Барлығы: ${total}  |  Орындалды: ${doneCount}  |  Қалды: ${total - doneCount}`
       : `Total: ${total}  |  Completed: ${doneCount}  |  Remaining: ${total - doneCount}`;
     doc.text(statsText, M, y, { width: CW });
+
+    doc.end();
+  });
+}
+
+export async function generateMultiDateReportPdf(
+  sections: { label: string; tasks: TodoItem[] }[],
+  language: string
+): Promise<Buffer> {
+  const fonts = getFonts(language);
+  const now = new Date();
+  const isRu = language === 'ru';
+  const isKk = language === 'kk';
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: M, bufferPages: true });
+    const chunks: Buffer[] = [];
+    doc.on('data', (c: Buffer) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    doc.registerFont('Regular', fonts.regular);
+    doc.registerFont('Bold', fonts.bold);
+
+    doc.on('pageAdded', () => drawBg(doc));
+    drawBg(doc);
+
+    let y = M;
+
+    const titleText = isRu ? 'ОТЧЕТ ПО ЗАДАЧАМ' : isKk ? 'ТАПСЫРМАЛАР ЕСЕБІ' : 'TASK REPORT';
+    doc.font('Bold').fontSize(28).fillColor(TEXT_PRI);
+    doc.text(titleText, M, y, { width: CW });
+    y = doc.y + 4;
+
+    doc.font('Regular').fontSize(13).fillColor(TEXT_SEC);
+    doc.text(fmtDate(now), M, y, { width: CW });
+    y = doc.y + 14;
+
+    doc.save().moveTo(M, y).lineTo(PAGE_W - M, y).lineWidth(1).strokeColor(BORDER).stroke().restore();
+    y += 16;
+
+    for (const section of sections) {
+      if (section.tasks.length === 0) continue;
+
+      if (y > MAX_Y - 60) { doc.addPage(); y = M; }
+
+      // Section header
+      doc.font('Bold').fontSize(14).fillColor(ACCENT);
+      doc.text(section.label, M, y, { width: CW });
+      y = doc.y + 8;
+
+      doc.font('Regular').fontSize(12).fillColor(TEXT_SEC);
+      const countLabel = isRu ? `задач: ${section.tasks.length}`
+        : isKk ? `тапсырма: ${section.tasks.length}`
+        : `tasks: ${section.tasks.length}`;
+      doc.text(countLabel, M, y, { width: CW });
+      y = doc.y + 10;
+
+      for (const todo of section.tasks) {
+        if (y > MAX_Y - 30) { doc.addPage(); y = M; }
+
+        const pColor = todo.priority === 'high' ? PRI_HIGH : todo.priority === 'medium' ? PRI_MED : PRI_LOW;
+        const priorityStr = todo.priority === 'high' ? (isRu ? 'ВЫСОКИЙ' : isKk ? 'ЖОҒАРЫ' : 'HIGH')
+          : todo.priority === 'medium' ? (isRu ? 'СРЕДНИЙ' : isKk ? 'ОРТА' : 'MEDIUM')
+          : (isRu ? 'НИЗКИЙ' : isKk ? 'ТӨМЕН' : 'LOW');
+        const timeStr = todo.time ? `  ${todo.time}` : '';
+        const locationStr = todo.location ? `  ${todo.location}` : '';
+        const dateStr = todo.date ? `  ${formatDate(todo.date, language)}` : '';
+
+        doc.save().roundedRect(M, y, CW, 22, 4).fill(CARD_BG).restore();
+        doc.save().roundedRect(M, y, CW, 22, 4).lineWidth(1).strokeColor(BORDER).stroke().restore();
+
+        doc.font('Regular').fontSize(12).fillColor(TEXT_PRI);
+        const meta = `${todo.task}${timeStr}${locationStr}${dateStr}`;
+        doc.text(meta, M + 8, y + 3, { width: CW * 0.65 });
+
+        doc.font('Bold').fontSize(9).fillColor(pColor);
+        doc.text(priorityStr, M + CW - 80, y + 4, { width: 70, align: 'right' });
+
+        y += 28;
+      }
+
+      y += 12;
+    }
 
     doc.end();
   });

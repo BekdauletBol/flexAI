@@ -2,13 +2,17 @@ import OpenAI from 'openai';
 import { config } from '../config.js';
 import { AnalysisResult } from '../types/analysis.js';
 import { v4 as uuid } from 'uuid';
+import { groq, GROQ_MODEL, hasGroq } from './groq.js';
 
-const openai = new OpenAI({
+const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
   ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
-  timeout: 60000,
+  timeout: 120000,
   maxRetries: 1,
 });
+
+const llm = hasGroq ? groq : fallback;
+const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timeoutId: NodeJS.Timeout;
@@ -104,8 +108,8 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
 
     console.log(`[Analysis] Analyzing (${transcript.length} chars)...`);
 
-    const response = await withTimeout(openai.chat.completions.create({
-      model: config.openaiModel,
+    const response = await withTimeout(llm.chat.completions.create({
+      model: MODEL,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT + contextPrompt },
         { role: 'user', content: `Analyze this transcript:\n\n"${transcript}"` },
@@ -113,7 +117,7 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
       response_format: { type: 'json_object' },
       temperature: 0.3,
       max_tokens: 4096,
-    }), 60000);
+    }), 120000);
 
     const content = response.choices[0]?.message?.content;
     if (!content) throw new Error('Empty response');
@@ -127,8 +131,8 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
       // Retry with simplified prompt focused only on todos
       try {
         console.log('[Analysis] Retrying with simplified prompt...');
-        const retryResponse = await withTimeout(openai.chat.completions.create({
-          model: config.openaiModel,
+        const retryResponse = await withTimeout(llm.chat.completions.create({
+          model: MODEL,
           messages: [
             { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), duration (number, default 30). Extract EVERY task mentioned, do not skip any. Language: same as transcript.` + contextPrompt },
             { role: 'user', content: transcript },
@@ -136,7 +140,7 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
           response_format: { type: 'json_object' },
           temperature: 0.3,
           max_tokens: 4096,
-        }), 60000);
+        }), 120000);
         const retryContent = retryResponse.choices[0]?.message?.content;
         if (retryContent) {
           result = JSON.parse(retryContent) as AnalysisResult;
@@ -186,7 +190,7 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
     console.log(`[Analysis] "${result.title}" [${result.language}] — ${result.todos.length} todos (${timed} timed) ${hasLoc ? '📍 location check' : ''}`);
     return result;
   } catch (error) {
-    console.error('[Analysis] Error:', error);
-    throw new Error(`Failed to analyze: ${error instanceof Error ? error.message : 'Unknown'}`);
+    console.error('[Analysis] FULL ERROR:', error);
+    throw new Error(`Failed to analyze: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

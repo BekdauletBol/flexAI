@@ -8,10 +8,11 @@ Voice-to-task bot with scheduling, reminders, conflict detection, multi-language
 - Task extraction with priorities, dates, times, locations
 - Per-task reminder keyboard (5/10/15/30/60 min + custom)
 - Conflict detection (overlapping tasks)
-- PDF report generation
+- PDF report generation (Buffer-based, no disk leakage)
 - Multi-language: English, Russian, Kazakh
 - Auto-detected location (geocoding + weather)
-- SQLite persistence (no JSON corruption)
+- SQLite persistence with WAL mode
+- **Production Ready**: 30,000 user hard cap, rate limiting, async processing queue.
 
 ## Quick Start
 
@@ -39,6 +40,7 @@ npm run dev
 - `/clear` — archive (mark done) all completed tasks
 - `/language` — switch language
 - `/help` — usage info
+- `/stats` — (Admin only) view user count, task count, and queue status
 
 ## Configuration
 
@@ -46,12 +48,19 @@ npm run dev
 |-----|----------|-------------|
 | TELEGRAM_BOT_TOKEN | yes | From @BotFather |
 | OPENAI_API_KEY | yes | OpenAI key or GitHub PAT (`ghp_...`) |
-| GROQ_API_KEY | yes | Groq Whisper (free at console.groq.com) |
-| WEBHOOK_DOMAIN | no | HTTPS URL for webhook mode (omit = long polling) |
-| GOOGLE_MAPS_API_KEY | no | Location/weather features |
-| OPENWEATHER_API_KEY | no | Weather forecast |
-| WEBAPP_URL | no | Telegram Mini App public URL |
-| LOG_LEVEL | no | `info` (default), `debug`, `trace` |
+| GROQ_API_KEY | yes | Groq Whisper |
+| ADMIN_TELEGRAM_ID | yes | Your Telegram ID for `/stats` |
+| TELEGRAM_BOT_API_SECRET_TOKEN | yes | Arbitrary string for webhook security |
+| WEBHOOK_DOMAIN | no | HTTPS URL for webhook mode |
+| MAX_USERS | no | Default: 30000 |
+| LOG_LEVEL | no | `info` (default), `debug` |
+
+## Webhook Setup
+
+To enable webhook mode:
+1. Set `WEBHOOK_DOMAIN` to `https://your-domain.com`.
+2. Set `TELEGRAM_BOT_API_SECRET_TOKEN` to a secure random string.
+3. Start the bot. It will automatically call `setWebhook`.
 
 ## Docker
 
@@ -60,19 +69,10 @@ docker compose up -d --build
 ```
 Starts on port 3000 with healthcheck, auto-restart, persistent volume.
 
-## Production Checklist
-
-- Set `WEBHOOK_DOMAIN` to your HTTPS URL (required for Telegram webhook)
-- Use Docker with `docker compose up -d`
-- Monitor via healthcheck: `GET /health`
-- Logs via `docker compose logs -f`
-- DB volume persists across restarts
-
 ## Architecture
 
 ```
-voice/audio -> Groq Whisper -> GPT-4o analysis -> tasks stored in SQLite
-                                                     -> PDF report
-                                                     -> reminders (30s interval)
-                                                     -> conflict check
+voice -> Processing Queue -> Whisper -> GPT-4o -> SQLite
+                                               -> PDF
+                                               -> Reminders
 ```

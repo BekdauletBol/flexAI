@@ -9,14 +9,89 @@ import { searchPlace, getWeatherForecast, getDirections, generateLocationAdvice 
 import { savePending, setUserFlowState, clearUserFlowState, getUserState, setUserState, clearUserState, UserState } from '../services/pendingStore.js';
 import { buildConflictMessage, buildCombinedConflictMessage, getConflictKeyboard, getCombinedConflictKeyboard, getSingleConflictKeyboard, getNavKeyboard } from '../services/messages.js';
 import { startDeliveryFlow } from '../services/delivery.js';
-import { detectIntent, askQuestion, chatReply, extractDeleteInfo, extractMemoryUpdate } from '../services/intent.js';
+import { detectIntent, askQuestion, chatReply, extractDeleteInfo, extractMemoryUpdate, quickIntentOverride } from '../services/intent.js';
 import { getUserMemory, updateUserMemory } from '../services/memoryStore.js';
-import { generateReportPdf } from '../services/pdf.js';
+import { generateReportPdf, generateMultiDateReportPdf } from '../services/pdf.js';
+import { TodoItem } from '../types/analysis.js';
 import { generateFullReport, generateWeeklyReport } from '../services/reporter.js';
 import fs from 'fs';
 import path from 'path';
 import https from 'https';
 import http from 'http';
+
+// ─── Compound command helpers ─────────────────────────────
+const pendingSecondaryActions = new Map<number, { reminderMinutes?: number }>();
+
+function extractReminderFromTranscript(text: string): number | null {
+  const lower = text.toLowerCase();
+
+  const match = text.match(/за (\d+)\s*минут/i) || text.match(/remind.*?(\d+)\s*min/i);
+  if (match) return parseInt(match[1], 10);
+
+  if (/за полчаса/i.test(lower)) return 30;
+  if (/за час\b|за 1 час/i.test(lower)) return 60;
+  if (/за 10\b/.test(text)) return 10;
+  if (/за 15\b/.test(text)) return 15;
+  if (/за 20\b/.test(text)) return 20;
+
+  const simple = text.match(/за (\d+)/i);
+  if (simple) return parseInt(simple[1], 10);
+
+  return null;
+}
+
+function getReminderLabel(minutes: number, lang: string): string {
+  if (lang === 'ru') return `Напомню за ${minutes} мин.`;
+  if (lang === 'kk') return `${minutes} мин. бұрын еске саламын.`;
+  return `I'll remind you ${minutes} min before.`;
+}
+
+async function applyPendingReminder(userId: number, taskId: string | undefined, ctx: Context, lang: string) {
+  if (!taskId) return;
+  const pending = pendingSecondaryActions.get(userId);
+  if (!pending?.reminderMinutes) return;
+
+  try {
+    const tasks = getUserTasks(userId);
+    const task = tasks.find(t => t.id === taskId);
+    if (task && ctx.chat) {
+      scheduleReminders(ctx.chat.id, userId, [{ ...task }], lang, pending.reminderMinutes);
+      await ctx.reply(getReminderLabel(pending.reminderMinutes, lang));
+    }
+  } catch (e) {
+    console.error('[Compound] Failed to apply reminder:', e);
+  }
+  pendingSecondaryActions.delete(userId);
+}
+
+async function detectAndHandleSecondaryAction(
+  transcript: string,
+  userId: number,
+  ctx: Context,
+  lang: string
+) {
+  // Check for "и добавь / and add" pattern — secondary action
+  const splitMatch = transcript.match(/\b(и|and)\s+(добавь|запиши|создай|сделай|add|create|make)\s+(.+)/i);
+  if (splitMatch) {
+    const secondaryText = splitMatch[3];
+    const override = quickIntentOverride(secondaryText);
+    if (override?.intent === 'action') {
+      try { await ctx.api.sendChatAction(ctx.chat!.id, 'typing'); } catch {}
+      await handlePlanIntent(ctx, userId, secondaryText, null, lang);
+    }
+  }
+
+  // Check for "и отметь / and mark" — secondary complete
+  const completeMatch = transcript.match(/\b(и|and)\s+(отметь|заверши|отметить|закончи|mark|complete|finish)\s+(.+)/i);
+  if (completeMatch) {
+    const secondaryText = completeMatch[3];
+    const override = quickIntentOverride(secondaryText);
+    if (override?.intent === 'complete') {
+      try { await ctx.api.sendChatAction(ctx.chat!.id, 'typing'); } catch {}
+      await handleCompleteIntent(ctx, userId, { intent: 'complete', target_task: secondaryText }, null, lang);
+    }
+  }
+}
 
 async function downloadFile(url: string, dest: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -96,7 +171,8 @@ export async function handleVoice(ctx: Context) {
 
     // 3. Intent detection
     try { await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Analyzing...'); } catch {}
-    const intentResult = await detectIntent(transcript);
+    const override = quickIntentOverride(transcript);
+    const intentResult = override ?? await detectIntent(transcript);
     console.log('[DEBUG] Transcript:', transcript.substring(0, 150));
     console.log('[DEBUG] Intent result:', JSON.stringify(intentResult));
     
@@ -332,6 +408,7 @@ async function handleRescheduleIntent(ctx: Context, userId: number, intentResult
     updateTaskDateTime(userId, found.todo.id, intentResult.target_date || found.todo.date || '', targetTime);
     cancelReminderByTaskId(found.todo.id);
     if (ctx.chat) scheduleReminders(ctx.chat.id, userId, [found.todo], lang);
+    await applyPendingReminder(userId, found.todo.id, ctx, lang);
   }
 
   try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
@@ -423,6 +500,7 @@ async function handleCompleteIntent(ctx: Context, userId: number, intentResult: 
   const found = matches[0];
   if (found.todo.id) {
     markTaskDone(userId, found.todo.id);
+    await applyPendingReminder(userId, found.todo.id, ctx, lang);
   }
 
   try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
@@ -508,6 +586,7 @@ export async function continueFlow(
           updateTaskDateTime(userId, taskId, task.date || '', newTime);
           cancelReminderByTaskId(taskId);
           if (ctx.chat) scheduleReminders(ctx.chat.id, userId, [task], lang);
+          await applyPendingReminder(userId, taskId, ctx, lang);
         }
       }
       clearUserState(userId);
@@ -554,17 +633,30 @@ export async function routeByIntent(intentResult: any, ctx: Context, userId: num
       await handleQuestionIntent(ctx, userId, transcript, statusMsg, lang);
       break;
     
-    case 'reschedule':
+    case 'reschedule': {
+      const reminderMinutes = extractReminderFromTranscript(transcript);
+      if (reminderMinutes) {
+        pendingSecondaryActions.set(userId, { reminderMinutes });
+      }
       await handleRescheduleIntent(ctx, userId, intentResult, statusMsg, lang);
+      await detectAndHandleSecondaryAction(transcript, userId, ctx, lang);
       break;
+    }
     
     case 'delete':
       await handleDeleteIntent(ctx, userId, transcript, statusMsg, lang);
+      await detectAndHandleSecondaryAction(transcript, userId, ctx, lang);
       break;
     
-    case 'complete':
+    case 'complete': {
+      const reminderMinutes = extractReminderFromTranscript(transcript);
+      if (reminderMinutes) {
+        pendingSecondaryActions.set(userId, { reminderMinutes });
+      }
       await handleCompleteIntent(ctx, userId, intentResult, statusMsg, lang);
+      await detectAndHandleSecondaryAction(transcript, userId, ctx, lang);
       break;
+    }
     
     case 'report':
       await handleCommandIntent(ctx, userId, { ...intentResult, command: 'report_pdf' }, statusMsg, lang);
@@ -597,27 +689,72 @@ async function handleCommandIntent(ctx: Context, userId: number, intentResult: a
   const command = intentResult.command;
   
   if (command === 'report' || command === 'report_pdf') {
-    const hasFilters = intentResult.target_date || intentResult.target_time || intentResult.after_time || intentResult.priority_filter;
-    const tasks = hasFilters
-      ? getTasksFiltered(userId, {
-          date: intentResult.target_date ?? null,
-          beforeTime: intentResult.target_time ?? null,
-          afterTime: intentResult.after_time ?? null,
-          priority: intentResult.priority_filter ?? null,
-        })
-      : getUserTasks(userId);
-    if (tasks.length === 0) {
-      await ctx.reply(lang === 'ru' ? 'Задач пока нет.' : lang === 'kk' ? 'Тапсырмалар жоқ.' : 'No tasks recorded yet.');
-      return;
-    }
-    const waitMsg = await ctx.reply(lang === 'ru' ? 'Загрузка задач...' : lang === 'kk' ? 'Тапсырмалар жүктелуде...' : 'Loading tasks...');
-    try {
-      const pdfBuf = await generateReportPdf(tasks, lang);
-      try { await ctx.api.deleteMessage(ctx.chat!.id, waitMsg.message_id); } catch {}
-      await ctx.replyWithDocument(new InputFile(pdfBuf, `report_${userId}_${Date.now()}.pdf`), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
-    } catch (err) {
-      const report = await generateFullReport(tasks, lang);
-      await ctx.api.editMessageText(ctx.chat!.id, waitMsg.message_id, report, { reply_markup: getNavKeyboard(lang) });
+    const dateRanges = intentResult.date_ranges;
+    const hasMultiDate = Array.isArray(dateRanges) && dateRanges.length > 1;
+    const hasDateRange = intentResult.date_from || intentResult.date_to;
+    const hasFilters = intentResult.target_date || intentResult.target_time || intentResult.after_time || intentResult.priority_filter || hasDateRange;
+
+    if (hasMultiDate) {
+      const sections: { label: string; tasks: TodoItem[] }[] = [];
+      for (const dr of dateRanges) {
+        const tasks = getTasksFiltered(userId, {
+          date: dr.date ?? null,
+          beforeTime: dr.beforeTime ?? null,
+          afterTime: dr.afterTime ?? null,
+          priority: null,
+        });
+        if (tasks.length > 0) {
+          const d = dr.date ? new Date(dr.date + 'T12:00:00') : null;
+          const dateLabel = d ? d.toLocaleDateString(lang === 'ru' ? 'ru-RU' : lang === 'kk' ? 'kk-KZ' : 'en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : dr.date;
+          let label = dateLabel;
+          if (dr.beforeTime) label += ` ${lang === 'ru' ? 'до' : lang === 'kk' ? 'дейін' : 'before'} ${dr.beforeTime}`;
+          if (dr.afterTime) label += ` ${lang === 'ru' ? 'после' : lang === 'kk' ? 'кейін' : 'after'} ${dr.afterTime}`;
+          sections.push({ label, tasks });
+        }
+      }
+      if (sections.length === 0) {
+        await ctx.reply(lang === 'ru' ? 'Задач пока нет.' : lang === 'kk' ? 'Тапсырмалар жоқ.' : 'No tasks recorded yet.');
+        return;
+      }
+      const waitMsg = await ctx.reply(lang === 'ru' ? 'Загрузка задач...' : lang === 'kk' ? 'Тапсырмалар жүктелуде...' : 'Loading tasks...');
+      try {
+        const pdfBuf = await generateMultiDateReportPdf(sections, lang);
+        try { await ctx.api.deleteMessage(ctx.chat!.id, waitMsg.message_id); } catch {}
+        await ctx.replyWithDocument(new InputFile(pdfBuf, `report_${userId}_${Date.now()}.pdf`), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
+      } catch (err) {
+        console.error('[Report] Multi-date PDF generation failed:', err);
+        await ctx.api.editMessageText(ctx.chat!.id, waitMsg.message_id,
+          lang === 'ru' ? 'Не удалось создать PDF. Попробуйте ещё раз.'
+          : lang === 'kk' ? 'PDF жасау мүмкін болмады. Қайталап көріңіз.'
+          : 'Failed to generate PDF. Please try again.');
+      }
+    } else {
+      const tasks = hasFilters
+        ? getTasksFiltered(userId, {
+            date: intentResult.target_date ?? null,
+            beforeTime: intentResult.target_time ?? null,
+            afterTime: intentResult.after_time ?? null,
+            priority: intentResult.priority_filter ?? null,
+            dateFrom: intentResult.date_from ?? null,
+            dateTo: intentResult.date_to ?? null,
+          })
+        : getUserTasks(userId);
+      if (tasks.length === 0) {
+        await ctx.reply(lang === 'ru' ? 'Задач пока нет.' : lang === 'kk' ? 'Тапсырмалар жоқ.' : 'No tasks recorded yet.');
+        return;
+      }
+      const waitMsg = await ctx.reply(lang === 'ru' ? 'Загрузка задач...' : lang === 'kk' ? 'Тапсырмалар жүктелуде...' : 'Loading tasks...');
+      try {
+        const pdfBuf = await generateReportPdf(tasks, lang);
+        try { await ctx.api.deleteMessage(ctx.chat!.id, waitMsg.message_id); } catch {}
+        await ctx.replyWithDocument(new InputFile(pdfBuf, `report_${userId}_${Date.now()}.pdf`), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
+      } catch (err) {
+        console.error('[Report] PDF generation failed:', err);
+        await ctx.api.editMessageText(ctx.chat!.id, waitMsg.message_id,
+          lang === 'ru' ? 'Не удалось создать PDF. Попробуйте ещё раз.'
+          : lang === 'kk' ? 'PDF жасау мүмкін болмады. Қайталап көріңіз.'
+          : 'Failed to generate PDF. Please try again.');
+      }
     }
   } else if (command === 'weekly') {
     const plans = getWeeklyPlans(userId);

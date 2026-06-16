@@ -9,17 +9,21 @@ import { startDeliveryFlow } from '../services/delivery.js';
 import { buildCombinedConflictMessage, getCombinedConflictKeyboard, getNavKeyboard } from '../services/messages.js';
 import { getUserConfig } from '../services/userConfig.js';
 import { scheduleReminders } from '../services/scheduler.js';
+import { groq, GROQ_MODEL, hasGroq } from '../services/groq.js';
 import http from 'http';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
 
-const openai = new OpenAI({
+const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
   ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
   timeout: 60000,
   maxRetries: 1,
 });
+
+const llm = hasGroq ? groq : fallback;
+const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
 
 async function downloadFile(url: string, dest: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -70,8 +74,8 @@ export async function handleImage(ctx: Context) {
     const base64Image = imageToBase64(tempFile);
     const dataUrl = `data:image/jpeg;base64,${base64Image}`;
 
-    const response = await openai.chat.completions.create({
-      model: config.openaiModel,
+    const response = await llm.chat.completions.create({
+      model: MODEL,
       messages: [
         {
           role: 'user',

@@ -5,7 +5,7 @@ import { config } from './config.js';
 import { handleVoice, handlePlanIntent, handleQuestionIntent, routeByIntent, continueFlow } from './handlers/voice.js';
 import { handleImage } from './handlers/image.js';
 import { initScheduler } from './services/scheduler.js';
-import { createServer } from './server.js';
+import { createServer, resetStartTime } from './server.js';
 import { setUserLanguage, getUserConfig, setUserLocation, setReminderOffset } from './services/userConfig.js';
 import { getUserTasks, getWeeklyPlans, archiveCompletedTasks, savePlan, deleteAllUserPlans, updateTaskDateTime } from './services/planStore.js';
 import { generateFullReport, generateWeeklyReport } from './services/reporter.js';
@@ -18,12 +18,20 @@ import { startDeliveryFlow, advanceReminderLoop } from './services/delivery.js';
 import { scheduleReminders, cancelReminderByTaskId, snoozeReminder, snoozeReminderUntilMorning } from './services/scheduler.js';
 import { detectIntent } from './services/intent.js';
 import { db } from './services/db.js';
+import { logger } from './logger.js';
+import { voiceQueue, getQueueStats } from './services/queue.js';
+
+console.log('[Config] Model:', process.env.OPENAI_MODEL || 'not set');
+console.log('[Config] BaseURL:', process.env.OPENAI_BASE_URL || 'not set');
+console.log('[Config] OpenAI key exists:', !!process.env.OPENAI_API_KEY);
+console.log('[Config] GitHub token exists:', !!process.env.GITHUB_TOKEN);
+console.log('[Config] Groq key exists:', !!process.env.GROQ_API_KEY);
 
 const bot = new Bot(config.telegramToken);
 
 const SEP = '———————————————';
 
-// ─── Localised strings ────────────────────────────────────────────────────────
+// Localised strings 
 
 const i18n = {
   ru: {
@@ -107,8 +115,8 @@ const i18n = {
     no_tasks: 'Тапсырмалар жоқ. Дауыстық хабарлама жіберіңіз.',
 
     no_weekly: 'Соңғы 7 күнде жазбалар жоқ.',
-    cleared: (n: number) => `Мұрағатталды: ${n} тапсырма.`,
-    cleared_none: 'Мұрағатталатын орындалған тапсырма жоқ.',
+    cleared: (n: number) => `Жасырылған: ${n} тапсырма.`,
+    cleared_none: 'Жасырылатын орындалған тапсырма жоқ.',
 
     voice_only: 'Дауыстық хабарлама жіберіңіз.',
     audio_note: 'Аудиофайл емес, дауыстық хабарлама жіберіңіз (микрофон батырмасын ұстап тұр).',
@@ -122,25 +130,65 @@ function getLang(userId: number): Lang {
   return (['ru', 'en', 'kk'].includes(lang) ? lang : 'en') as Lang;
 }
 
-// ─── Access control ───────────────────────────────────────────────────────────
+// Rate limiter (sliding window, 10 req/min per user)
+
+const userRequests = new Map<number, number[]>();
+const RATE_LIMIT = 30;
+const RATE_WINDOW = 60_000;
+
+function checkRateLimit(userId: number): boolean {
+  const now = Date.now();
+  const windowStart = now - RATE_WINDOW;
+  let timestamps = userRequests.get(userId) || [];
+  timestamps = timestamps.filter(t => t > windowStart);
+  if (timestamps.length >= RATE_LIMIT) return false;
+  timestamps.push(now);
+  userRequests.set(userId, timestamps);
+  return true;
+}
+
+// Request logging middleware
 
 bot.use(async (ctx, next) => {
-  if (config.allowedUserId && ctx.from?.id !== config.allowedUserId) {
-    console.warn(`[Bot] Access denied for user ${ctx.from?.id}`);
-    await ctx.reply('Access denied.');
+  const start = Date.now();
+  const userId = ctx.from?.id ?? 0;
+  const type = ctx.message?.voice ? 'voice' : ctx.message?.text ? 'text' : ctx.message?.photo ? 'photo' : 'other';
+  await next();
+  logger.info({ userId, type, duration: Date.now() - start, updateId: ctx.update.update_id }, 'Update processed');
+});
+
+// User cap + rate limit middleware
+
+bot.use(async (ctx, next) => {
+  const userId = ctx.from?.id;
+  if (!userId) return next();
+
+  // Hard cap check — only for new (unregistered) users
+  const user = db.prepare('SELECT language FROM users WHERE user_id = ?').get(userId) as any;
+  if (!user) {
+    const count = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c;
+    if (count >= config.maxUsers) {
+      logger.warn({ userId }, 'User cap reached, rejected');
+      await ctx.reply('Bot is at capacity. Please try again later.');
+      return;
+    }
+    db.prepare('INSERT INTO users (user_id, language) VALUES (?, ?)').run(userId, 'ru');
+    logger.info({ userId }, 'New user registered');
+  }
+
+  // Rate limit
+  if (!checkRateLimit(userId)) {
+    const lang = getLang(userId);
+    await ctx.reply(lang === 'ru' ? 'Слишком много запросов. Подождите минуту.'
+      : lang === 'kk' ? 'Тым көп сұраныс. Бір минут күтіңіз.'
+        : 'Too many requests. Please wait a minute.');
     return;
   }
+
   await next();
 });
 
-// ─── Debug middleware ─────────────────────────────────────────────────────────
-
-bot.use(async (ctx, next) => {
-  console.log(`[DEBUG] RAW UPDATE #${ctx.update.update_id}:`, JSON.stringify(ctx.update, null, 2));
-  await next();
-});
-
-// ─── Commands ─────────────────────────────────────────────────────────────────
+// Commands
 
 bot.command('ping', async (ctx) => {
   const lang = getLang(ctx.from!.id);
@@ -198,7 +246,7 @@ bot.command('report', async (ctx) => {
 
   try {
     const pdfBuf = await generateReportPdf(tasks, lang);
-    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch { }
 
     const fn = `report_${userId}_${Date.now()}.pdf`;
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Report', reply_markup: getNavKeyboard(lang) });
@@ -226,7 +274,7 @@ bot.command('weekly', async (ctx) => {
   try {
     const tasks = plans.flatMap(p => p.todos);
     const pdfBuf = await generateReportPdf(tasks, lang);
-    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch { }
 
     const fn = `weekly_${userId}_${Date.now()}.pdf`;
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Weekly Report', reply_markup: getNavKeyboard(lang) });
@@ -249,6 +297,22 @@ bot.command('clear', async (ctx) => {
   } else {
     await ctx.reply(i18n[lang].cleared(archived), { reply_markup: getNavKeyboard(lang) });
   }
+});
+
+bot.command('stats', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  if (config.adminTelegramId && userId !== config.adminTelegramId) {
+    await ctx.reply('Access denied.');
+    return;
+  }
+  const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c;
+  const todoCount = (db.prepare('SELECT COUNT(*) as c FROM todos').get() as { c: number }).c;
+  const queueStats = getQueueStats();
+  const uptime = Math.floor((Date.now() - process.uptime() * 1000) / 1000);
+  await ctx.reply(
+    `📊 STATS\n\nUsers: ${userCount} / ${config.maxUsers}\nTasks: ${todoCount}\nQueue: ${queueStats.size} waiting, ${queueStats.pending} pending\nUptime: ${uptime}s`
+  );
 });
 
 // Hidden — nuke all tasks for testing
@@ -293,7 +357,7 @@ bot.command('setcity', async (ctx) => {
   }
 });
 
-// ─── Callback handlers ────────────────────────────────────────────────────────
+// ─── Callback handlers 
 
 bot.callbackQuery('nav_report', async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -329,7 +393,7 @@ bot.callbackQuery('nav_weekly', async (ctx) => {
   try {
     const tasks = plans.flatMap(p => p.todos);
     const pdfBuf = await generateReportPdf(tasks, lang);
-    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch { }
     const fn = `weekly_${userId}_${Date.now()}.pdf`;
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: 'Weekly Report', reply_markup: getNavKeyboard(lang) });
   } catch (err) {
@@ -367,7 +431,7 @@ bot.callbackQuery('nav_language', async (ctx) => {
   await ctx.reply('Select language / Выберите язык / Тілді таңдаңыз:', { reply_markup: keyboard });
 });
 
-// ─── Combined Conflict Callbacks ──────────────────────────────────────────────
+// ─── Combined Conflict Callbacks 
 
 bot.callbackQuery(/^conflict_keep_all_(.+)$/, async (ctx) => {
   const pendingId = ctx.match[1];
@@ -384,7 +448,7 @@ bot.callbackQuery(/^conflict_keep_all_(.+)$/, async (ctx) => {
   }
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
   }
 
   await startDeliveryFlow(ctx, pending);
@@ -404,7 +468,7 @@ bot.callbackQuery(/^conflict_skip_all_(.+)$/, async (ctx) => {
   pending.resolvedTodos = pending.analysis.todos.filter(t => !conflictedIds.has(t.id));
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
   }
 
   await startDeliveryFlow(ctx, pending);
@@ -427,7 +491,7 @@ bot.callbackQuery(/^conflict_one_by_one_(.+)$/, async (ctx) => {
   const keyboard = getSingleConflictKeyboard(pendingId, 0, pending.analysis.language);
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
   }
   await ctx.reply(conflictMsg, { reply_markup: keyboard });
 });
@@ -450,7 +514,7 @@ bot.callbackQuery(/^conflict_keep_idx_(.+)_(\d+)$/, async (ctx) => {
       savePlan(ctx.chat.id, pending.userId, pending.analysis);
     }
     if (ctx.callbackQuery.message) {
-      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
     }
     await startDeliveryFlow(ctx, pending);
   } else {
@@ -460,7 +524,7 @@ bot.callbackQuery(/^conflict_keep_idx_(.+)_(\d+)$/, async (ctx) => {
     const keyboard = getSingleConflictKeyboard(pendingId, nextIndex, pending.analysis.language);
 
     if (ctx.callbackQuery.message) {
-      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
     }
     await ctx.reply(conflictMsg, { reply_markup: keyboard });
   }
@@ -524,7 +588,7 @@ bot.callbackQuery(/^conflict_skip_idx_(.+)_(\d+)$/, async (ctx) => {
       savePlan(ctx.chat.id, pending.userId, pending.analysis);
     }
     if (ctx.callbackQuery.message) {
-      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
     }
     await startDeliveryFlow(ctx, pending);
   } else {
@@ -534,7 +598,7 @@ bot.callbackQuery(/^conflict_skip_idx_(.+)_(\d+)$/, async (ctx) => {
     const keyboard = getSingleConflictKeyboard(pendingId, nextIndex, pending.analysis.language);
 
     if (ctx.callbackQuery.message) {
-      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
     }
     await ctx.reply(conflictMsg, { reply_markup: keyboard });
   }
@@ -557,7 +621,7 @@ bot.callbackQuery(/^rs_d_(today|tomorrow|plus2|custom)$/, async (ctx) => {
   if (option === 'custom') {
     const prompt = state.lang === 'ru' ? 'Введите дату в формате DD.MM (например 15.06)'
       : state.lang === 'kk' ? 'DD.MM форматында күнді енгізіңіз (мысалы 15.06)'
-      : 'Enter date in DD.MM format (e.g. 15.06)';
+        : 'Enter date in DD.MM format (e.g. 15.06)';
     await ctx.editMessageText(prompt);
     setUserFlowState(userId, { type: 'awaiting_reschedule', pendingId: '', customField: 'date' });
     return;
@@ -589,7 +653,7 @@ bot.callbackQuery(/^rs_t_custom$/, async (ctx) => {
 
   const prompt = state.lang === 'ru' ? 'Введите время в формате HH:MM (например 14:30)'
     : state.lang === 'kk' ? 'HH:MM форматында уақытты енгізіңіз (мысалы 14:30)'
-    : 'Enter time in HH:MM format (e.g. 14:30)';
+      : 'Enter time in HH:MM format (e.g. 14:30)';
   await ctx.editMessageText(prompt);
   setUserFlowState(userId, { type: 'awaiting_reschedule', pendingId: '', customField: 'time' });
 });
@@ -631,7 +695,7 @@ bot.callbackQuery('rs_confirm', async (ctx) => {
   if (selectedDate === currentDate && selectedTime === currentTime) {
     const timeMsg = lang === 'ru' ? 'Это то же самое время. Выберите другое.'
       : lang === 'kk' ? 'Бұл сол уақыт. Басқасын таңдаңыз.'
-      : 'This is the same time. Pick another.';
+        : 'This is the same time. Pick another.';
     await ctx.editMessageText(timeMsg);
     // Re-show date picker
     const dateMsg = buildRescheduleDatePicker(state.taskName, lang);
@@ -648,8 +712,8 @@ bot.callbackQuery('rs_confirm', async (ctx) => {
     const conflictMsg = lang === 'ru'
       ? `КОНФЛИКТ\n\nВ ${selectedTime} уже запланировано:\n— ${conflict.task}\n\nВыберите другое время.`
       : lang === 'kk'
-      ? `ҚАЙШЫЛЫҚ\n\n${selectedTime} уақытында жоспарланған:\n— ${conflict.task}\n\nБасқа уақыт таңдаңыз.`
-      : `CONFLICT\n\nAt ${selectedTime} you already have:\n— ${conflict.task}\n\nPick a different time.`;
+        ? `ҚАЙШЫЛЫҚ\n\n${selectedTime} уақытында жоспарланған:\n— ${conflict.task}\n\nБасқа уақыт таңдаңыз.`
+        : `CONFLICT\n\nAt ${selectedTime} you already have:\n— ${conflict.task}\n\nPick a different time.`;
     await ctx.editMessageText(conflictMsg);
     const timeMsg = buildRescheduleTimePicker(state.taskName, selectedDate, lang);
     const timeKb = getRescheduleTimeKeyboard(lang);
@@ -685,7 +749,7 @@ bot.callbackQuery('rs_confirm', async (ctx) => {
         const conflict = pending.conflicts[nextIndex];
         const conflictMsg = buildConflictMessage([conflict], lang);
         const keyboard = getSingleConflictKeyboard(pendingId, nextIndex, lang);
-        try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message!.message_id); } catch {}
+        try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message!.message_id); } catch { }
         await ctx.reply(conflictMsg, { reply_markup: keyboard });
       }
       return;
@@ -697,7 +761,7 @@ bot.callbackQuery('rs_confirm', async (ctx) => {
     state.taskName, currentDate, currentTime,
     selectedDate, selectedTime, lang
   );
-  try { await ctx.editMessageText(confirmMsg); } catch {}
+  try { await ctx.editMessageText(confirmMsg); } catch { }
   await ctx.reply(lang === 'ru' ? 'Готово.' : lang === 'kk' ? 'Дайын.' : 'Done.', { reply_markup: getNavKeyboard(lang) });
 });
 
@@ -710,17 +774,17 @@ bot.callbackQuery(/^conflict_keep_(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery('Expired.');
     return;
   }
-  
+
   await ctx.answerCallbackQuery();
-  
+
   if (ctx.chat) {
     savePlan(ctx.chat.id, pending.userId, pending.analysis);
   }
-  
+
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
   }
-  
+
   await startDeliveryFlow(ctx, pending);
 });
 
@@ -742,7 +806,7 @@ bot.callbackQuery(/^conflict_skip_(.+)$/, async (ctx) => {
   pending.resolvedTodos = pending.resolvedTodos.filter(t => t.id !== skipTask.id);
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
   }
 
   await startDeliveryFlow(ctx, pending);
@@ -751,29 +815,29 @@ bot.callbackQuery(/^conflict_skip_(.+)$/, async (ctx) => {
 bot.callbackQuery(/^srem_(10|30|60|none|custom)_(.+)$/, async (ctx) => {
   const action = ctx.match[1];
   const pendingId = ctx.match[2];
-  
+
   await ctx.answerCallbackQuery();
-  
+
   const pending = getPending(pendingId);
   if (!pending) {
     if (ctx.callbackQuery.message) {
-      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
     }
     return;
   }
-  
+
   const todos = pending.resolvedTodos || pending.analysis.todos;
   const currentTaskIndex = pending.reminderIndex;
-  
+
   if (currentTaskIndex >= todos.length) return;
   const currentTask = todos[currentTaskIndex];
-  
+
   if (action === 'custom') {
     const lang = pending.analysis.language;
     const prompt = lang === 'ru' ? `Введите время (и дату) для:\n"${currentTask.task}"\nФормат: HH:MM или DD.MM HH:MM`
-                 : lang === 'kk' ? `Уақытты (және күнді) енгізіңіз:\n"${currentTask.task}"\nФормат: HH:MM немесе DD.MM HH:MM`
-                 : `Enter time (and date) for:\n"${currentTask.task}"\nFormat: HH:MM or DD.MM HH:MM`;
-                 
+      : lang === 'kk' ? `Уақытты (және күнді) енгізіңіз:\n"${currentTask.task}"\nФормат: HH:MM немесе DD.MM HH:MM`
+        : `Enter time (and date) for:\n"${currentTask.task}"\nFormat: HH:MM or DD.MM HH:MM`;
+
     if (ctx.callbackQuery.message) {
       await ctx.editMessageText(prompt);
     } else {
@@ -782,14 +846,14 @@ bot.callbackQuery(/^srem_(10|30|60|none|custom)_(.+)$/, async (ctx) => {
     setUserFlowState(pending.userId, { type: 'awaiting_custom_reminder', pendingId, taskIndex: currentTaskIndex });
     return;
   }
-  
+
   const offsetMinutes = action === 'none' ? -1 : parseInt(action, 10);
-  
+
   // Set default (if not none, update their default)
   if (offsetMinutes !== -1) {
     setReminderOffset(ctx.from.id, offsetMinutes);
   }
-  
+
   // Schedule if not none and has a time
   if (offsetMinutes !== -1 && ctx.chat) {
     // If it doesn't have a time, we can't schedule an offset reminder, 
@@ -798,16 +862,16 @@ bot.callbackQuery(/^srem_(10|30|60|none|custom)_(.+)$/, async (ctx) => {
       scheduleReminders(ctx.chat.id, pending.userId, [currentTask], pending.analysis.language, offsetMinutes);
     }
   }
-  
+
   // Move to next task
   pending.reminderIndex++;
-  
+
   // Loop again by calling delivery (it handles editing the message if we passed ctx, but it actually replies right now)
   // Since delivery uses ctx.reply, we should delete the old inline message
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
   }
-  
+
   await advanceReminderLoop(ctx, pending);
 });
 
@@ -818,7 +882,7 @@ bot.callbackQuery(/^snz_(\d+|tmrw|done)_(.+)$/, async (ctx) => {
   const taskId = ctx.match[2];
   const userId = ctx.from.id;
   const lang = getLang(userId);
-  
+
   await ctx.answerCallbackQuery();
 
   if (action === 'done') {
@@ -826,7 +890,7 @@ bot.callbackQuery(/^snz_(\d+|tmrw|done)_(.+)$/, async (ctx) => {
     markTaskDone(userId, taskId);
     const msg = lang === 'ru' ? 'Отмечено как выполненное.' : lang === 'kk' ? 'Орындалды деп белгіленді.' : 'Marked as done.';
     if (ctx.callbackQuery.message) {
-      try { await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch {}
+      try { await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch { }
     }
     cancelReminderByTaskId(taskId);
     return;
@@ -852,7 +916,7 @@ bot.callbackQuery(/^snz_(\d+|tmrw|done)_(.+)$/, async (ctx) => {
 
   if (!reminder) {
     if (ctx.callbackQuery.message) {
-      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+      try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
     }
     return;
   }
@@ -866,7 +930,7 @@ bot.callbackQuery(/^snz_(\d+|tmrw|done)_(.+)$/, async (ctx) => {
     : (lang === 'ru' ? `Напомню через ${minutes} мин.` : lang === 'kk' ? `${minutes} миннен кейін еске саламын.` : `I\'ll remind you in ${minutes} min.`);
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch {}
+    try { await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message.message_id, msg); } catch { }
   }
 });
 
@@ -892,7 +956,7 @@ bot.callbackQuery(/^img_confirm_(.+)$/, async (ctx) => {
   }
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
   }
 
   await startDeliveryFlow(ctx, pending);
@@ -912,14 +976,28 @@ bot.callbackQuery(/^img_cancel_(.+)$/, async (ctx) => {
   const msg = lang === 'ru' ? 'Отменено.' : lang === 'kk' ? 'Болдырылмады.' : 'Cancelled.';
 
   if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
   }
   await ctx.reply(msg);
 });
 
 // ─── Message handlers ─────────────────────────────────────────────────────────
 
-bot.on('message:voice', handleVoice);
+bot.on('message:voice', async (ctx) => {
+  const userId = ctx.from?.id ?? 0;
+  await ctx.reply('Processing ⏳');
+  await voiceQueue.add(async () => {
+    const start = Date.now();
+    try {
+      await handleVoice(ctx);
+    } catch (err) {
+      logger.error({ userId, err: err instanceof Error ? err.message : String(err) }, 'Voice processing failed');
+      try { await ctx.reply('Something went wrong processing your voice message.'); } catch { }
+    } finally {
+      logger.info({ userId, type: 'voice', duration: Date.now() - start }, 'Voice processed');
+    }
+  });
+});
 
 bot.on('message:photo', handleImage);
 
@@ -931,9 +1009,9 @@ bot.on('message:audio', async (ctx) => {
 bot.on('message:text', async (ctx) => {
   if (ctx.message.text.startsWith('/')) return;
   const userId = ctx.from?.id ?? 0;
-  
+
   const flow = getUserFlowState(userId);
-  
+
   if (flow && flow.type === 'awaiting_reschedule') {
     const text = ctx.message.text.trim();
     const state = getRescheduleState(userId);
@@ -962,7 +1040,7 @@ bot.on('message:text', async (ctx) => {
       const lang = getLang(userId);
       await ctx.reply(lang === 'ru' ? 'Неверный формат. Используйте DD.MM (например 15.06).'
         : lang === 'kk' ? 'Қате формат. DD.MM пайдаланыңыз (мысалы 15.06).'
-        : 'Invalid format. Use DD.MM (e.g. 15.06).');
+          : 'Invalid format. Use DD.MM (e.g. 15.06).');
       return;
     }
 
@@ -988,7 +1066,7 @@ bot.on('message:text', async (ctx) => {
       const lang = getLang(userId);
       await ctx.reply(lang === 'ru' ? 'Неверный формат. Используйте HH:MM (например 15:30).'
         : lang === 'kk' ? 'Қате формат. HH:MM пайдаланыңыз (мысалы 15:30).'
-        : 'Invalid format. Use HH:MM (e.g. 15:30).');
+          : 'Invalid format. Use HH:MM (e.g. 15:30).');
       return;
     }
 
@@ -1024,22 +1102,22 @@ bot.on('message:text', async (ctx) => {
       const lang = getLang(userId);
       await ctx.reply(lang === 'ru' ? 'Неверный формат. Используйте HH:MM (например 15:30).'
         : lang === 'kk' ? 'Қате формат. HH:MM пайдаланыңыз (мысалы 15:30).'
-        : 'Invalid format. Use HH:MM (e.g. 15:30).');
+          : 'Invalid format. Use HH:MM (e.g. 15:30).');
       return;
     }
   }
-  
+
   if (flow && flow.type === 'awaiting_custom_reminder') {
     const text = ctx.message.text.trim();
     // Match either "DD.MM HH:MM" or "HH:MM"
     const matchFull = text.match(/^(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})$/);
     const matchTime = text.match(/^(\d{1,2}):(\d{2})$/);
     const pending = getPending(flow.pendingId);
-    
+
     if ((matchFull || matchTime) && pending) {
       const todos = pending.resolvedTodos || pending.analysis.todos;
       const task = todos[flow.taskIndex];
-      
+
       if (matchFull) {
         // e.g. "12.06 15:30"
         task.time = `${matchFull[1].padStart(2, '0')}.${matchFull[2].padStart(2, '0')} ${matchFull[3].padStart(2, '0')}:${matchFull[4]}`;
@@ -1047,22 +1125,22 @@ bot.on('message:text', async (ctx) => {
         // e.g. "15:30"
         task.time = `${matchTime[1].padStart(2, '0')}:${matchTime[2]}`;
       }
-      
+
       // We assume custom time means reminder is AT that time (offset 0)
       if (ctx.chat) {
         scheduleReminders(ctx.chat.id, userId, [task], pending.analysis.language, 0);
       }
-      
+
       clearUserFlowState(userId);
       pending.reminderIndex++;
-      
+
       await advanceReminderLoop(ctx, pending);
       return;
     } else {
       const lang = getLang(userId);
-      const msg = lang === 'ru' ? 'Неверный формат. Используйте HH:MM или DD.MM HH:MM.' 
-                : lang === 'kk' ? 'Қате формат. HH:MM немесе DD.MM HH:MM пайдаланыңыз.' 
-                : 'Invalid format. Use HH:MM or DD.MM HH:MM.';
+      const msg = lang === 'ru' ? 'Неверный формат. Используйте HH:MM или DD.MM HH:MM.'
+        : lang === 'kk' ? 'Қате формат. HH:MM немесе DD.MM HH:MM пайдаланыңыз.'
+          : 'Invalid format. Use HH:MM or DD.MM HH:MM.';
       await ctx.reply(msg);
       return;
     }
@@ -1086,7 +1164,7 @@ bot.on('message:text', async (ctx) => {
     await routeByIntent(intentResult, ctx, userId, text, { message_id: statusMsgId }, lang);
   } catch (err) {
     console.error('[Text] Intent routing failed:', err);
-    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsgId); } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsgId); } catch { }
     await ctx.reply(i18n[lang].voice_only);
   }
 });
@@ -1094,52 +1172,99 @@ bot.on('message:text', async (ctx) => {
 // ─── Error handling ───────────────────────────────────────────────────────────
 
 bot.catch((err) => {
-  console.error(`[${new Date().toISOString()}] Error update ${err.ctx.update.update_id}:`, err.error);
+  logger.error({ updateId: err.ctx.update.update_id, err: err.error }, 'Grammy error');
   const userId = err.ctx.from?.id;
   const lang = userId ? getLang(userId) : 'en';
   try {
     const msg = lang === 'ru' ? 'Произошла ошибка. Попробуйте еще раз.' : lang === 'kk' ? 'Қате орын алды. Қайталап көріңіз.' : 'An error occurred. Please try again.';
     err.ctx.reply(msg);
-  } catch {}
+  } catch { }
 });
+
+// ─── Global error handlers ─────────────────────────────────────────────────────
+
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason instanceof Error ? reason.message : String(reason) }, 'Unhandled rejection');
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error({ err: err.message, stack: err.stack }, 'Uncaught exception');
+});
+
+// ─── Graceful shutdown ─────────────────────────────────────────────────────────
+
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal }, 'Shutting down...');
+  bot.stop();
+  voiceQueue.clear();
+  // Force-exit after 5s even if queue jobs hang (not unref'd — must fire)
+  const forceTimer = setTimeout(() => {
+    logger.warn('Shutdown timeout — forcing exit');
+    process.exit(0);
+  }, 5000);
+  try {
+    await voiceQueue.onIdle();
+  } catch {}
+  clearTimeout(forceTimer);
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
-// Clean up temp files from previous run
 const TEMP_DIR = path.resolve('temp');
 try {
   if (fs.existsSync(TEMP_DIR)) {
     const files = fs.readdirSync(TEMP_DIR);
     for (const f of files) {
-      if (f.endsWith('.ogg')) fs.unlinkSync(path.join(TEMP_DIR, f));
+      if (f.endsWith('.ogg') || f.endsWith('.jpg')) fs.unlinkSync(path.join(TEMP_DIR, f));
     }
-    console.log(`[Boot] Cleaned ${files.length} temp files`);
+    logger.info({ cleaned: files.length }, 'Temp files cleaned');
   }
 } catch (e) {
-  console.error('[Boot] Temp cleanup failed:', e);
+  logger.error({ err: e }, 'Temp cleanup failed');
 }
 
 initScheduler(bot);
 
-console.log('[DB] Users:', db.prepare('SELECT COUNT(*) as c FROM users').get());
-console.log('[DB] Todos:', db.prepare('SELECT COUNT(*) as c FROM todos').get());
+const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c;
+const todoCount = (db.prepare('SELECT COUNT(*) as c FROM todos').get() as { c: number }).c;
+logger.info({ userCount, todoCount }, 'DB stats');
 
-const app = createServer();
+resetStartTime();
+const app = createServer(bot);
 app.listen(config.port, '0.0.0.0', () => {
-  console.log(`[Server] Express server running on port ${config.port}`);
+  logger.info({ port: config.port }, 'Express server started');
 });
 
-console.log('[Bot] Starting...');
-bot.start({
-  onStart: async (info) => {
-    console.log(`@${info.username} running`);
-    console.log(`   Model: ${config.openaiModel} | GitHub: ${config.isGitHubModels} | User: ${config.allowedUserId || 'any'}`);
-    // Dismiss any stale reply keyboard left by a previous bot version
-    if (config.allowedUserId) {
-      try {
-        await bot.api.sendMessage(config.allowedUserId, '.', { reply_markup: { remove_keyboard: true } });
-        await bot.api.sendMessage(config.allowedUserId, 'Ready.', { reply_markup: { remove_keyboard: true } });
-      } catch {}
-    }
-  },
-});
+if (config.webhookDomain && config.telegramSecretToken) {
+  const webhookUrl = `${config.webhookDomain}/webhook`;
+  bot.api.setWebhook(webhookUrl, { secret_token: config.telegramSecretToken }).then(() => {
+    logger.info({ url: webhookUrl }, 'Webhook set');
+  }).catch((err) => {
+    logger.error({ err: err.message }, 'Webhook setup failed, falling back to polling');
+    startPolling();
+  });
+} else {
+  startPolling();
+}
+
+function startPolling() {
+  logger.info('[Bot] Starting polling...');
+  bot.start({
+    onStart: async (info) => {
+      logger.info({ username: info.username, model: config.openaiModel, github: config.isGitHubModels, maxUsers: config.maxUsers }, 'Bot running');
+      if (config.allowedUserId) {
+        try {
+          await bot.api.sendMessage(config.allowedUserId, '.', { reply_markup: { remove_keyboard: true } });
+          await bot.api.sendMessage(config.allowedUserId, 'Ready.', { reply_markup: { remove_keyboard: true } });
+        } catch { }
+      }
+    },
+  });
+}

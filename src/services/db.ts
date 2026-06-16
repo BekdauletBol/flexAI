@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const DB_PATH = path.resolve(process.cwd(), 'data.db');
+const DB_PATH = path.resolve(process.cwd(), 'data', 'flexai.db');
 const db = new Database(DB_PATH);
 
 // Enable WAL for better concurrent performance
@@ -499,6 +499,15 @@ export function deletePlanHistoriesByDate(userId: number, dateStr: string) {
       }
     }
   })();
+}
+
+export function getUserCount(): number {
+  const row = db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number };
+  return row.c;
+}
+
+export function registerUser(userId: number, language: string = 'en') {
+  db.prepare('INSERT INTO users (user_id, language) VALUES (?, ?)').run(userId, language);
 }
 
 export function updateSnooze(taskId: string, snoozedUntil: string | null) {

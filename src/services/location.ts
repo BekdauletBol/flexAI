@@ -1,13 +1,17 @@
 import { logger } from '../logger.js';
-import { config } from '../config.js';
 import OpenAI from 'openai';
+import { config } from '../config.js';
+import { groq, GROQ_MODEL, hasGroq } from './groq.js';
 
-const openai = new OpenAI({
+const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
   ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
   timeout: 30000,
   maxRetries: 1,
 });
+
+const llm = hasGroq ? groq : fallback;
+const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timeoutId: NodeJS.Timeout;
@@ -165,8 +169,8 @@ export async function generateLocationAdvice(
   ].filter(Boolean).join('\n');
 
   try {
-    const res = await withTimeout(openai.chat.completions.create({
-      model: config.openaiModel,
+    const res = await withTimeout(llm.chat.completions.create({
+      model: MODEL,
       messages: [
         { role: 'system', content: `You give short, practical location advice in ${lang}. Be concise (3-4 sentences max). Include emoji.` },
         { role: 'user', content: `Based on this data, is this a good time to visit? Any issues? Best alternative?\n\n${context}` },

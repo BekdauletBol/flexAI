@@ -1,35 +1,47 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import { Bot } from 'grammy';
+import { config } from './config.js';
 import { getPlan, completeTask, rescheduleTask, getAllPlans, getPlansByTimeframe, deleteTaskById, deletePlansByDate, deletePlanById, addTodoToPlan } from './services/planStore.js';
 import { setReminderOffset, getUserConfig } from './services/userConfig.js';
 import { rescheduleReminder, updateReminderOffsets, cancelReminderByTaskId } from './services/scheduler.js';
 import { logger } from './logger.js';
-import { deleteMemoryEntry, clearAllMemory, getUserMemory, formatMemoryForDisplay } from './services/memoryStore.js';
+import { deleteMemoryEntry, clearAllMemory, getUserMemory } from './services/memoryStore.js';
+import { db } from './services/db.js';
 
-export function createServer() {
+let startTime = Date.now();
+
+export function createServer(bot?: Bot) {
   const app = express();
 
   app.use(cors());
   app.use(express.json({ limit: '10mb' }));
 
-  // Simple rate limiter
-  const rateLimit = new Map<string, { count: number; resetAt: number }>();
-  const RATE_LIMIT = 100;
-  const RATE_WINDOW = 60_000;
-
+  // Request logging
   app.use((req, res, next) => {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    const now = Date.now();
-    let entry = rateLimit.get(ip);
-    if (!entry || now > entry.resetAt) {
-      entry = { count: 0, resetAt: now + RATE_WINDOW };
-      rateLimit.set(ip, entry);
-    }
-    entry.count++;
-    if (entry.count > RATE_LIMIT) {
-      res.status(429).json({ error: 'Too many requests' });
-      return;
+    const start = Date.now();
+    res.on('finish', () => {
+      logger.info({
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        duration: Date.now() - start,
+        ip: req.ip,
+      }, 'HTTP request');
+    });
+    next();
+  });
+
+  // Webhook secret token validation
+  app.use((req, res, next) => {
+    if (req.path === '/webhook' && req.method === 'POST') {
+      const token = req.headers['x-telegram-bot-api-secret-token'];
+      if (config.telegramSecretToken && token !== config.telegramSecretToken) {
+        logger.warn({ ip: req.ip }, 'Webhook request with invalid secret token');
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
     }
     next();
   });
@@ -42,8 +54,22 @@ export function createServer() {
   });
 
   app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c;
+    res.json({
+      status: 'ok',
+      userCount,
+      uptime: Math.floor((Date.now() - startTime) / 1000),
+      timestamp: new Date().toISOString(),
+    });
   });
+
+  // Webhook endpoint for Telegram updates
+  if (bot) {
+    app.post('/webhook', (req, res) => {
+      bot.handleUpdate(req.body);
+      res.sendStatus(200);
+    });
+  }
 
   app.post('/api/todo/complete', (req, res) => {
     const { chatId, taskId, done } = req.body;
@@ -86,7 +112,6 @@ export function createServer() {
     res.json({ success: true, todo });
   });
 
-  // Delete task
   app.post('/api/todo/delete', (req, res) => {
     const { userId, taskId, date } = req.body;
     if (!userId || !taskId) {
@@ -101,11 +126,10 @@ export function createServer() {
       return;
     }
 
-    console.log(`[API] Task deleted: "${removed.task}"`);
+    logger.info({ userId, task: removed.task }, 'Task deleted via API');
     res.json({ success: true, task: removed });
   });
 
-  // Create task (from Mini App)
   app.post('/api/todo/create', (req, res) => {
     const { chatId, userId, task, time, priority, date } = req.body;
     if (!chatId || !userId || !task) {
@@ -113,11 +137,10 @@ export function createServer() {
       return;
     }
     const todo = addTodoToPlan(Number(chatId), Number(userId), task, time || '', priority || 'medium', date || '');
-    console.log(`[API] Task created: "${todo.task}"`);
+    logger.info({ userId, task: todo.task }, 'Task created via API');
     res.json({ success: true, todo });
   });
 
-  // Delete day plan
   app.post('/api/plans/delete', (req, res) => {
     const { userId, date } = req.body;
     if (!userId || !date) {
@@ -126,11 +149,10 @@ export function createServer() {
     }
 
     const count = deletePlansByDate(Number(userId), date);
-    console.log(`[API] Deleted ${count} plans for date ${date}`);
+    logger.info({ userId, date, count }, 'Plans deleted via API');
     res.json({ success: true, deleted: count });
   });
 
-  // Get all plans
   app.get('/api/plans/all', (req, res) => {
     const userId = req.query.userId;
     if (!userId) {
@@ -151,7 +173,6 @@ export function createServer() {
     }))});
   });
 
-  // Get plans by timeframe
   app.get('/api/plans/timeframe/:timeframe', (req, res) => {
     const userId = req.query.userId;
     const timeframe = req.params.timeframe;
@@ -174,7 +195,6 @@ export function createServer() {
     }))});
   });
 
-  // Delete plan by id
   app.post('/api/plans/delete/plan', (req, res) => {
     const { userId, planId } = req.body;
     if (!userId || !planId) {
@@ -191,7 +211,6 @@ export function createServer() {
     res.json({ success: true });
   });
 
-  // Get plan by date
   app.get('/api/plans/:date', (req, res) => {
     const userId = req.query.userId;
     const date = req.params.date;
@@ -209,7 +228,6 @@ export function createServer() {
     res.json({ plan });
   });
 
-  // Change reminder offset setting
   app.post('/api/todo/reminder', (req, res) => {
     const { chatId, userId, offsetMinutes } = req.body;
     if (!chatId || !userId || typeof offsetMinutes !== 'number') {
@@ -224,7 +242,6 @@ export function createServer() {
     res.json({ success: true, offsetMinutes });
   });
 
-  // Delete memory entry
   app.post('/api/memory/delete', (req, res) => {
     const { userId, key, index } = req.body;
     if (!userId || !key || typeof index !== 'number') {
@@ -241,7 +258,6 @@ export function createServer() {
     res.json({ success: true });
   });
 
-  // Clear all memory
   app.post('/api/memory/clear', (req, res) => {
     const { userId } = req.body;
     if (!userId) {
@@ -253,7 +269,6 @@ export function createServer() {
     res.json({ success: true });
   });
 
-  // Get memory
   app.get('/api/memory', (req, res) => {
     const userId = req.query.userId;
     if (!userId) {
@@ -266,4 +281,8 @@ export function createServer() {
   });
 
   return app;
+}
+
+export function resetStartTime() {
+  startTime = Date.now();
 }

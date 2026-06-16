@@ -198,6 +198,8 @@ export function getTasksFiltered(userId: number, filters: {
   beforeTime?: string | null;
   afterTime?: string | null;
   priority?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
 }): TodoItem[] {
   let query = 'SELECT * FROM todos WHERE user_id = ? AND done = 0';
   const params: any[] = [userId];
@@ -205,6 +207,14 @@ export function getTasksFiltered(userId: number, filters: {
   if (filters.date) {
     query += ' AND date = ?';
     params.push(filters.date);
+  }
+  if (filters.dateFrom) {
+    query += ' AND date >= ?';
+    params.push(filters.dateFrom);
+  }
+  if (filters.dateTo) {
+    query += ' AND date <= ?';
+    params.push(filters.dateTo);
   }
   if (filters.beforeTime) {
     query += ' AND time < ?';
@@ -219,7 +229,7 @@ export function getTasksFiltered(userId: number, filters: {
     params.push(filters.priority);
   }
 
-  query += ' ORDER BY time ASC';
+  query += ' ORDER BY date ASC, time ASC';
   const rows = db.prepare(query).all(...params) as any[];
   return rows.map(todoFromRow);
 }
