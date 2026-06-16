@@ -31,8 +31,7 @@ cmd = 'node dist/index.js'
   memory_mb = 512
 
 # Persistent storage for the SQLite database.
-# If you already have a Fly volume, replace 'flexai_data' with its name
-# (run `fly volumes list` to see it) and keep destination = '/data'.
+# This must match an existing Fly volume attached to the app.
 [[mounts]]
-  source = 'flexai_data'
+  source = 'data'
   destination = '/data'
