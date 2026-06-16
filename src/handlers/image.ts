@@ -1,9 +1,7 @@
-import { Context, InlineKeyboard } from 'grammy';
+import { Context } from 'grammy';
 import { config } from '../config.js';
-import { addTodoToPlan } from '../services/planStore.js';
-import { scheduleReminders } from '../services/scheduler.js';
 
-interface ExtractedTask {
+export interface ExtractedTask {
   task: string;
   date: string | null;
   time: string | null;
@@ -17,7 +15,13 @@ interface AnalysisResult {
   tasks: ExtractedTask[];
 }
 
-const pendingImageTasks = new Map<number, ExtractedTask[]>();
+export interface PendingImageData {
+  tasks: ExtractedTask[];
+  source: string;
+  expiresAt: number;
+}
+
+export const pendingImageTasks = new Map<number, PendingImageData>();
 
 export async function handleImage(ctx: Context) {
   const userId = ctx.from!.id;
@@ -41,22 +45,18 @@ export async function handleImage(ctx: Context) {
     return;
   }
 
-  pendingImageTasks.set(userId, result.tasks);
+  pendingImageTasks.set(userId, {
+    tasks: result.tasks,
+    source: result.source_type,
+    expiresAt: Date.now() + 5 * 60 * 1000,
+  });
 
   const preview = result.tasks
-    .map((t, i) => `${i + 1}. ${t.task}${t.time ? ' · ' + t.time : ''}${t.date ? ' · ' + t.date : ''}`)
+    .map(t => `— ${t.task}${t.time ? ' · ' + t.time : ''}`)
     .join('\n');
 
-  const keyboard = new InlineKeyboard()
-    .text('Добавить всё в план', `img_add_all_${userId}`)
-    .row()
-    .text('Выбрать нужные', `img_select_${userId}`)
-    .row()
-    .text('Отмена', `img_cancel_${userId}`);
-
   await ctx.reply(
-    `${result.source_type}\n\nНашёл ${result.tasks.length} задач:\n\n${preview}\n\nЧто сделать?`,
-    { reply_markup: keyboard }
+    `${result.source_type} — ${result.tasks.length} задач\n\n${preview}\n\nОтправь голосовое — скажи что с ними сделать.`
   );
 }
 
@@ -115,42 +115,3 @@ If no tasks visible: { "source_type": "Unknown", "tasks": [] }`,
     return { source_type: 'Unknown', tasks: [] };
   }
 }
-
-export async function saveTasksToPlan(
-  ctx: Context,
-  userId: number,
-  tasks: ExtractedTask[]
-): Promise<number> {
-  let saved = 0;
-  for (const task of tasks) {
-    addTodoToPlan(
-      ctx.chat!.id,
-      userId,
-      task.task,
-      task.time || '',
-      task.priority || 'medium',
-      task.date || new Date().toISOString().substring(0, 10),
-    );
-    saved++;
-  }
-  const timed = tasks.filter(t => t.time);
-  if (timed.length > 0 && ctx.chat) {
-    scheduleReminders(
-      ctx.chat.id,
-      userId,
-      timed.map(t => ({
-        id: '',
-        task: t.task,
-        time: t.time || undefined,
-        date: t.date || undefined,
-        priority: (t.priority as 'high' | 'medium' | 'low') || 'medium',
-        done: false,
-        duration: t.duration_minutes || 30,
-      })),
-      'ru',
-    );
-  }
-  return saved;
-}
-
-export { pendingImageTasks };
