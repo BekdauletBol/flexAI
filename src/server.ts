@@ -52,7 +52,7 @@ export function createServer(bot?: Bot) {
   app.get('/webapp', (req, res) => {
     res.sendFile(path.resolve('public/webapp.html'));
   });
-
+  
   app.get('/health', (req, res) => {
     const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c;
     res.json({

@@ -129,7 +129,7 @@ export function clearRescheduleState(userId: number) {
 }
 
 // Cleanup task (runs every minute)
-setInterval(() => {
+const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [id, note] of pendingNotes.entries()) {
     if (now - note.createdAt > 10 * 60 * 1000) { // 10 minutes
@@ -142,3 +142,5 @@ setInterval(() => {
     }
   }
 }, 60 * 1000);
+
+cleanupInterval.unref?.();

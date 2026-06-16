@@ -3,7 +3,10 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const DB_PATH = path.resolve(process.cwd(), 'data', 'flexai.db');
+const DB_PATH = process.env.FLEXAI_DB_PATH
+  ? path.resolve(process.env.FLEXAI_DB_PATH)
+  : path.resolve(process.cwd(), 'data', 'flexai.db');
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const db = new Database(DB_PATH);
 
 // Enable WAL for better concurrent performance

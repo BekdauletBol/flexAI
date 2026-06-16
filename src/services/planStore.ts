@@ -372,6 +372,16 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
   const today = date || now.toISOString().substring(0, 10);
   const taskNorm = task.trim().toLowerCase();
 
+  // Ensure parent rows exist for foreign-keyed todo inserts.
+  db.prepare(`
+    INSERT OR IGNORE INTO users (user_id, language)
+    VALUES (?, 'en')
+  `).run(userId);
+  db.prepare(`
+    INSERT OR IGNORE INTO plans (chat_id, user_id, title, summary, key_points, tags, language, created_at)
+    VALUES (?, ?, '', '', '[]', '[]', 'en', datetime('now'))
+  `).run(chatId, userId);
+
   // Check for duplicates
   const existingTodos = stmtGetAllTodosByUser.all(userId) as any[];
   const isDuplicate = existingTodos.some((t: any) => {
