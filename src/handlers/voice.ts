@@ -856,23 +856,57 @@ async function handleRescheduleIntent(
   intentResult: any,
   statusMsg: any,
   lang: string,
+  transcript?: string,
 ) {
   await ctx.api.sendChatAction(ctx.chat!.id, "typing");
 
-  const taskQuery = intentResult.target_task;
-  const targetTime = intentResult.target_time;
+  let taskQuery = intentResult.target_task;
+  let targetTime = intentResult.target_time;
+  let targetDate = intentResult.target_date;
+
+  // Fallback: if LLM intent didn't extract task/time, call extractRescheduleInfo
+  if (!taskQuery && transcript) {
+    console.log(
+      "[Reschedule] target_task missing, running extractRescheduleInfo...",
+    );
+    const extracted = await extractRescheduleInfo(transcript);
+    if (extracted) {
+      taskQuery = extracted.task || taskQuery;
+      targetTime = extracted.newTime || targetTime;
+      targetDate = extracted.date || targetDate;
+      console.log(
+        `[Reschedule] Extracted: task="${taskQuery}" time="${targetTime}" date="${targetDate}"`,
+      );
+    }
+  }
 
   if (!taskQuery) {
     try {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
     } catch {}
-    await ctx.reply(
-      lang === "ru"
-        ? "Не удалось определить задачу для переноса."
-        : lang === "kk"
-          ? "Тапсырманы анықтау мүмкін болмады."
-          : "Could not identify the task to reschedule.",
-    );
+    // Show all pending tasks so user can pick
+    const allTasks = getUserTasks(userId).filter((t) => !t.done && t.time);
+    if (allTasks.length > 0) {
+      const list = allTasks
+        .slice(0, 8)
+        .map((t, i) => `${i + 1}. ${t.task} · ${t.time}`)
+        .join("\n");
+      const hint =
+        lang === "ru"
+          ? `Какую задачу перенести?\n\n${list}\n\nОтправь голосовое с названием задачи.`
+          : lang === "kk"
+            ? `Қай тапсырманы жылжытамыз?\n\n${list}\n\nДауыстық хабар жіберіп, тапсырма атын айт.`
+            : `Which task to reschedule?\n\n${list}\n\nSend a voice message with the task name.`;
+      await ctx.reply(hint);
+    } else {
+      await ctx.reply(
+        lang === "ru"
+          ? "Не удалось определить задачу для переноса."
+          : lang === "kk"
+            ? "Тапсырманы анықтау мүмкін болмады."
+            : "Could not identify the task to reschedule.",
+      );
+    }
     return;
   }
 
@@ -927,7 +961,7 @@ async function handleRescheduleIntent(
   }
 
   // Both task and time specified — reschedule directly
-  const found = findTaskByText(userId, taskQuery, intentResult.target_date);
+  const found = findTaskByText(userId, taskQuery, targetDate);
   if (!found) {
     try {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
@@ -951,7 +985,7 @@ async function handleRescheduleIntent(
     updateTaskDateTime(
       userId,
       found.todo.id,
-      intentResult.target_date || found.todo.date || "",
+      targetDate || found.todo.date || "",
       targetTime,
     );
     cancelReminderByTaskId(found.todo.id);
@@ -1325,7 +1359,14 @@ export async function routeByIntent(
       if (reminderMinutes) {
         pendingSecondaryActions.set(userId, { reminderMinutes });
       }
-      await handleRescheduleIntent(ctx, userId, intentResult, statusMsg, lang);
+      await handleRescheduleIntent(
+        ctx,
+        userId,
+        intentResult,
+        statusMsg,
+        lang,
+        transcript,
+      );
       await detectAndHandleSecondaryAction(transcript, userId, ctx, lang);
       break;
     }
