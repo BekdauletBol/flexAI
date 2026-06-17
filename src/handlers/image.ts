@@ -242,8 +242,13 @@ Return ONLY this JSON (no markdown, no extra text):
   "summary": "2-3 sentence summary in ${lang === "ru" ? "Russian" : lang === "kk" ? "Kazakh" : "English"} describing what was found, when the person is free/busy, and any conflicts with existing tasks"
 }`;
 
+  // Use configured model — gpt-4o supports vision on both OpenAI and GitHub Models
+  const visionModel = config.openaiModel.startsWith("gpt-4")
+    ? config.openaiModel
+    : "gpt-4o";
+
   const response = await client.chat.completions.create({
-    model: "gpt-4o",
+    model: visionModel,
     messages: [
       {
         role: "user",
