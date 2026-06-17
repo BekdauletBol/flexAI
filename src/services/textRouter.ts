@@ -235,7 +235,8 @@ export async function handleTextMessage(ctx: Context, text: string) {
     conflicts,
     phase: conflicts.length > 0 ? 'conflict' as const : 'reminder' as const,
     resolvedTodos: analysis.todos,
-    reminderIndex: 0
+    reminderIndex: 0,
+    source: 'telegram' as const,
   };
   
   const pendingId = savePending(pendingData);
@@ -249,7 +250,7 @@ export async function handleTextMessage(ctx: Context, text: string) {
 
   try { await ctx.api.deleteMessage(chatId, statusMsg.message_id); } catch {}
 
-  savePlan(chatId, userId, analysis);
+  savePlan(chatId, userId, analysis, 'telegram');
   const timedTasks = analysis.todos.filter(t => t.time);
   if (timedTasks.length > 0) {
     scheduleReminders(chatId, userId, analysis.todos, analysis.language);

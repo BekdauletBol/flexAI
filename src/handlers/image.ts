@@ -1,9 +1,11 @@
 import { Context, InlineKeyboard } from "grammy";
 import OpenAI from "openai";
 import { config } from "../config.js";
+import { TaskSource } from "../types/analysis.js";
 import { getUserTasks } from "../services/planStore.js";
 import { getUserConfig } from "../services/userConfig.js";
 import { logger } from "../logger.js";
+import { setAwaitingImageFollowup, clearAwaitingImageFollowup } from "../services/pendingStore.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,12 +38,20 @@ interface ScreenshotAnalysis {
 export interface PendingImageData {
   tasks: ExtractedTask[];
   source: string;
+  mappedSource: TaskSource;
   analysis: ScreenshotAnalysis;
   expiresAt: number;
   lang?: string;
   // one-by-one resolution state
   oneByOneIndex?: number;
   selections?: boolean[]; // true = add, false = skip
+}
+
+export function mapSourceAppToTaskSource(sourceApp: string): TaskSource {
+  const app = sourceApp.toLowerCase();
+  if (app.includes('teams') || app.includes('microsoft')) return 'teams';
+  // Screenshots arrive through Telegram unless we can identify another app
+  return 'telegram';
 }
 
 export const pendingImageTasks = new Map<number, PendingImageData>();
@@ -116,11 +126,23 @@ export async function handleImage(ctx: Context) {
     pendingImageTasks.set(userId, {
       tasks: analysis.events,
       source: analysis.source_app,
+      mappedSource: mapSourceAppToTaskSource(analysis.source_app),
       analysis,
       lang,
       expiresAt: Date.now() + 5 * 60 * 1000, // 5 min TTL
       selections: new Array(analysis.events.length).fill(undefined),
     });
+
+    // Set awaiting state for voice follow-up
+    if (ctx.chat) {
+      setAwaitingImageFollowup(userId, ctx.chat.id, {
+        tasks: analysis.events,
+        source: analysis.source_app,
+        mappedSource: mapSourceAppToTaskSource(analysis.source_app),
+        analysis,
+        lang,
+      });
+    }
 
     try {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);

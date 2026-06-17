@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { config } from "../config.js";
+import { TaskSource } from "../types/analysis.js";
 import { groq, GROQ_MODEL, hasGroq } from "./groq.js";
 
 const fallback = new OpenAI({
@@ -43,13 +44,15 @@ export interface IntentResult {
     | "report"
     | "clear"
     | "summary"
-    | "social";
+    | "social"
+    | "free_time_query";
   confidence: number;
   target_task?: string;
   target_date?: string;
   target_time?: string;
   after_time?: string;
   priority_filter?: "high" | "medium" | "low";
+  source_filter?: TaskSource;
   period?: "today" | "tomorrow" | "week" | "month" | "all" | string;
   command_arg?: string;
   date_ranges?: DateRange[];
@@ -64,20 +67,25 @@ HIGHEST PRIORITY — check these BEFORE anything else:
 REPORT RULES — If ANY of these words appear → intent is "report", NEVER "action":
   Russian: отчёт, репорт, скинь задачи, покажи задачи, PDF, пдф, покажи план, что у меня запланировано, мои задачи за, задачи на, скинь отчёт, покажи отчёт
   English: report, show tasks, send pdf, show my tasks, what's planned, my tasks for, what do I have, what's on
-  Kazakh: есеп, тапсырмалар
+  Kazakh: есеп, есеп бер, тапсырмалар, тапсырмаларды көрсет, pdf, құжатты жібер
   Do NOT create a task from these. Do NOT save them. Do NOT reply with action.
+  Also extract any filters mentioned: source (teams/telegram/voice/manual), target_date, target_time, after_time, date_from, date_to, period, priority_filter.
 
 QUERY RULES — Use ONLY for general chat questions, NOT about tasks:
-  "что ты умеешь", "how are you", "привет", "hello"
-  Do NOT use query for "какие планы", "что у меня", "покажи" — those are "report".
+  "что ты умеешь", "как дела", "how are you", "привет", "hello", "сәлеметсіз бе", "қалайсыз"
+  Do NOT use query for "какие планы", "что у меня", "покажи", "қайшы пландар", "маған жоспарларымды көрсет" — those are "report".
 
 ACTION RULES — Only use "action" if the message clearly describes a NEW task/plan/todo:
-  "запиши", "добавь", "создай", "напомни сделать", "нужно сделать"
+  Russian: "запиши", "добавь", "создай", "напомни сделать", "нужно сделать", "план на"
+  English: "add", "create", "remind me to", "need to do", "plan for"
+  Kazakh: "қос", "жаса", "жоспар", "есте сақта", "жасау керек"
   NEVER use action if the message is asking about EXISTING tasks.
 
-DELETE — ONLY if message contains: удали, убери, отмени, удалить, убрать, отменить, delete, remove, cancel
+DELETE — ONLY if message contains: удали, убери, отмени, удалить, убрать, отменить, delete, remove, cancel, өшір, жой, болдырма
 
-RESCHEDULE — ONLY if message contains: перенеси, передвинь, сдвинь, перенести, reschedule, move
+RESCHEDULE — ONLY if message contains: перенеси, передвинь, сдвинь, перенести, reschedule, move, жылжыт, басқа уақытқа қой
+
+COMPLETE — ONLY if message contains: выполнил, сделал, готово, complete, done, finished, орындадым, біттім, дайын
 
 TARGET TASK EXTRACTION (critical for reschedule/complete/delete):
 - For "reschedule", "complete", and "delete" intents, you MUST extract the task name the user refers to and put it in "target_task".
@@ -90,16 +98,31 @@ TARGET TASK EXTRACTION (critical for reschedule/complete/delete):
 
 For "report" intents, set these fields:
   target_date — specific date mentioned (YYYY-MM-DD)
-  target_time — specific time filter (HH:MM)
+  target_time — specific time filter (HH:MM) meaning "before this time"
   after_time — show tasks after this time
   period — "today", "tomorrow", "week", "month", "all"
-  date_from — start of date range (YYYY-MM-DD). Examples: "за этот месяц" → first day of current month, "за этот год" → Jan 1, "неделя" → Monday of current week, "между 20 и 28 июня" → 2026-06-20
-  date_to — end of date range (YYYY-MM-DD). Examples: "за этот месяц" → last day of current month, "за этот год" → Dec 31, "неделя" → Sunday of current week, "между 20 и 28 июня" → 2026-06-28
-  date_ranges — for multiple dates/spans: [{date: "YYYY-MM-DD", beforeTime: "HH:MM or null", afterTime: "HH:MM or null"}]
-    Examples: "сегодня и завтра" → two entries, "на 2 дня" → today+tomorrow,
+  date_from — start of date range (YYYY-MM-DD). Examples:
+    Russian: "за этот месяц" → first day of current month, "за этот год" → Jan 1, "неделя" → Monday of current week, "между 20 и 28 июня" → 2026-06-20, "на сегодня" → today, "на завтра" → tomorrow, "на этой неделе" → Mon-Sun
+    Kazakh: "бүгін" → today, "ертең" → tomorrow, "осы аптада" → Mon-Sun, "бұл ай" → first-to-last of month
+    English: "today", "tomorrow", "this week", "this month", "between June 20 and 28" → 2026-06-20 to 2026-06-28
+  date_to — end of date range (YYYY-MM-DD). Examples:
+    Russian: "за этот месяц" → last day, "за этот год" → Dec 31, "неделя" → Sunday, "между 20 и 28 июня" → 2026-06-28
+    Kazakh: "осы аптада" → Sunday, "бұл ай" → last day
+  date_ranges — for multiple dates/spans: [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}]
+    Examples: "сегодня и завтра", "бүгін және ертең" → two entries, "на 2 дня" → today+tomorrow,
     "до 19 июня" → entries for each day from today to June 19,
     "на следующую неделю" → entries for next 7 days,
     "за эту неделю" → entries for current week (Mon-Sun)
+  priority_filter — "high" | "medium" | "low" or null
+  source_filter — task origin filter: "teams" | "telegram" | "voice" | "manual" or null. Examples:
+    - "только из Teams", "from the team", "планы из команды", "отчет по Teams", "команда", "Teams-тен", "Teams дан" → "teams"
+    - "задачи из Telegram", "Telegram-дан" → "telegram"
+    - "голосовые задачи", "дауыстық тапсырмалар" → "voice"
+    - "добавленные вручную", "қолмен қосылған" → "manual"
+  time filter examples:
+    Russian: "до 17:00" → target_time="17:00"; "после 17:00" → after_time="17:00"
+    Kazakh: "17:00-ға дейін" → target_time="17:00"; "17:00-ден кейін" → after_time="17:00"
+    English: "before 17:00" → target_time="17:00"; "after 17:00" → after_time="17:00"
 
 Return ONLY this JSON:
 {
@@ -111,7 +134,9 @@ Return ONLY this JSON:
   "after_time": "HH:MM or null",
   "date_from": "YYYY-MM-DD or null",
   "date_to": "YYYY-MM-DD or null",
-  "date_ranges": [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}]
+  "date_ranges": [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}],
+  "priority_filter": "high|medium|low or null",
+  "source_filter": "teams|telegram|voice|manual or null"
 }`;
 
 export function detectTranscriptLanguage(
@@ -142,8 +167,11 @@ export function quickIntentOverride(
     "покажи план",
     "send report",
     "show report",
+    "show tasks",
+    "send pdf",
     "отправь отчёт",
     "скинь отчёт",
+    "покажи отчёт",
     "отправь документ",
     "скинь документ",
     "скинь в формате",
@@ -152,55 +180,64 @@ export function quickIntentOverride(
     "в формате пдф",
     "pdf",
     "пдф",
+    "есе",
+    "есе бер",
+    "тапсырмаларды көрсет",
+    "құжатты жібер",
+    "pdf жібер",
   ];
-  const dateKeywords = [
-    "сегодня", "завтра", "вчера", "позавчера", "послезавтра",
-    "today", "tomorrow", "yesterday",
-    "за сегодня", "за завтра", "за вчера",
-    "на сегодня", "на завтра",
-    "за эту неделю", "за этот месяц", "за этот год",
-    "на этой неделе", "на следующей неделе",
-    "this week", "last week", "next week",
-    "this month", "last month",
-    "between", "между",
-  ];
-  const hasDateContext = dateKeywords.some((k) => lower.includes(k));
 
-  if (reportWords.some((w) => lower.includes(w))) {
-    if (hasDateContext) {
-      console.log("[Intent] Quick override → report with date context, deferring to LLM");
-      return null;
+  if (!reportWords.some((w) => lower.includes(w))) {
+    const queryWords = [
+      "какие у меня",
+      "что у меня",
+      "есть ли у меня",
+      "what do i have",
+      "what's on my",
+      "покажи что",
+      "какой план",
+      "что запланировано",
+      "маған не жоспарланған",
+      "жоспарларымды көрсет",
+    ];
+    if (queryWords.some((w) => lower.includes(w))) {
+      console.log("[Intent] Quick override → query");
+      return { intent: "query", confidence: 1.0 };
     }
-    console.log("[Intent] Quick override → report");
-    return {
-      intent: "report",
-      confidence: 1.0,
-      target_date: undefined,
-      target_time: undefined,
-      date_ranges: [],
-    };
+    return null;
   }
 
-  const queryWords = [
-    "какие у меня",
-    "что у меня",
-    "есть ли у меня",
-    "what do i have",
-    "what's on my",
-    "покажи что",
-    "какой план",
-    "что запланировано",
-  ];
-  if (queryWords.some((w) => lower.includes(w))) {
-    console.log("[Intent] Quick override → query");
-    return { intent: "query", confidence: 1.0 };
+  // Report intent confirmed. Try to resolve simple date/period filters directly.
+  const today = new Date().toISOString().slice(0, 10);
+  const tmr = new Date();
+  tmr.setDate(tmr.getDate() + 1);
+  const tomorrow = tmr.toISOString().slice(0, 10);
+
+  if (lower.includes("сегодня") || lower.includes("today") || lower.includes("бүгін")) {
+    console.log("[Intent] Quick override → report today");
+    return { intent: "report", confidence: 1.0, target_date: today };
+  }
+  if (lower.includes("завтра") || lower.includes("tomorrow") || lower.includes("ертең")) {
+    console.log("[Intent] Quick override → report tomorrow");
+    return { intent: "report", confidence: 1.0, target_date: tomorrow };
+  }
+  if (lower.includes("неделя") || lower.includes("week") || lower.includes("апта")) {
+    console.log("[Intent] Quick override → report week");
+    return { intent: "report", confidence: 1.0, period: "week" };
+  }
+  if (lower.includes("месяц") || lower.includes("month") || lower.includes("ай")) {
+    console.log("[Intent] Quick override → report month");
+    return { intent: "report", confidence: 1.0, period: "month" };
   }
 
-  // NOTE: reschedule and delete are intentionally NOT quick-overridden.
-  // They require LLM entity extraction (target_task, target_time) to work.
-  // A quick override without those fields causes silent failures.
-
-  return null;
+  console.log("[Intent] Quick override → report");
+  return {
+    intent: "report",
+    confidence: 1.0,
+    target_date: undefined,
+    target_time: undefined,
+    date_ranges: [],
+  };
 }
 
 export async function detectIntent(transcript: string): Promise<IntentResult> {
@@ -228,7 +265,7 @@ export async function detectIntent(transcript: string): Promise<IntentResult> {
         ],
         response_format: { type: "json_object" },
         temperature: 0.1,
-        max_tokens: 200,
+        max_tokens: 500,
       }),
       60000,
     );
@@ -443,6 +480,8 @@ export interface ReportExtraction {
   date_to?: string;
   date_ranges?: DateRange[];
   period?: "today" | "tomorrow" | "week" | "month" | "all";
+  priority_filter?: "high" | "medium" | "low";
+  source?: TaskSource;
 }
 
 export async function extractReportInfo(
@@ -462,7 +501,10 @@ export async function extractReportInfo(
         messages: [
           {
             role: "system",
-            content: `Extract report date filters from the user's message. Today is ${dateStr}. Return ONLY JSON: { "target_date": "YYYY-MM-DD or null", "target_time": "HH:MM or null", "after_time": "HH:MM or null", "date_from": "YYYY-MM-DD or null", "date_to": "YYYY-MM-DD or null", "date_ranges": [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}], "period": "today|tomorrow|week|month|all or null" }`,
+            content: `Extract report filters from the user's message. Today is ${dateStr}. Return ONLY JSON: { "target_date": "YYYY-MM-DD or null", "target_time": "HH:MM or null (tasks before this time)", "after_time": "HH:MM or null (tasks after this time)", "date_from": "YYYY-MM-DD or null", "date_to": "YYYY-MM-DD or null", "date_ranges": [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}], "period": "today|tomorrow|week|month|all or null", "priority_filter": "high|medium|low or null", "source": "teams|telegram|voice|manual or null" }.
+            Date/period examples: "на сегодня"/"бүгін"/"today" → period="today"; "на завтра"/"ертең"/"tomorrow" → period="tomorrow"; "на этой неделе"/"осы аптада"/"this week" → period="week"; "за этот месяц"/"бұл ай"/"this month" → period="month".
+            Source examples: "from the team/Teams", "из Teams/команды", "Teams-тен" → "teams"; "from Telegram", "Telegram-дан" → "telegram"; "voice tasks", "дауыстық тапсырмалар" → "voice"; "manual", "қолмен қосылған" → "manual".
+            Time examples: "до 17:00", "17:00-ға дейін", "before 17:00" → target_time="17:00"; "после 17:00", "17:00-ден кейін", "after 17:00" → after_time="17:00". `,
           },
           { role: "user", content: transcript },
         ],

@@ -1,5 +1,7 @@
 export type TimeFrame = 'day' | 'week' | 'month' | 'year';
 
+export type TaskSource = 'teams' | 'telegram' | 'voice' | 'manual';
+
 export interface TodoItem {
   id: string;
   task: string;
@@ -10,6 +12,7 @@ export interface TodoItem {
   date?: string;       // "YYYY-MM-DD" for grouping/conflict detection
   duration?: number;   // minutes, default 30
   location?: string;
+  source?: TaskSource; // origin of the task
 }
 
 export interface AnalysisResult {

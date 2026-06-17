@@ -41,6 +41,8 @@ import {
   UserState,
   getUserFlowState,
   getRescheduleState,
+  getAwaitingImageFollowup,
+  clearAwaitingImageFollowup,
 } from "../services/pendingStore.js";
 import {
   buildConflictMessage,
@@ -74,6 +76,7 @@ import {
 } from "../services/reporter.js";
 import { pendingImageTasks, ExtractedTask } from "./image.js";
 import { groq, GROQ_MODEL, hasGroq } from "../services/groq.js";
+import { utcToKzLocalDate } from "../utils/timezone.js";
 import fs from "fs";
 import path from "path";
 import https from "https";
@@ -470,7 +473,7 @@ Return ONLY this JSON with NO extra text:
         needs_location_check: false,
       };
       if (ctx.chat) {
-        savePlan(ctx.chat.id, userId, analysis);
+        savePlan(ctx.chat.id, userId, analysis, 'voice');
         const timed = allTodos.filter((t) => t.time);
         if (timed.length > 0)
           scheduleReminders(ctx.chat.id, userId, allTodos, lang);
@@ -514,6 +517,7 @@ Return ONLY this JSON with NO extra text:
         pendingImageTasks.set(userId, {
           tasks: imageTasks,
           source: "",
+          mappedSource: 'telegram',
           analysis: {
             source_app: "",
             detected_date: null,
@@ -563,7 +567,7 @@ Return ONLY this JSON with NO extra text:
         needs_location_check: false,
       };
       if (ctx.chat) {
-        savePlan(ctx.chat.id, userId, analysis);
+        savePlan(ctx.chat.id, userId, analysis, 'voice');
         const timed = allTodos.filter((t) => t.time);
         if (timed.length > 0)
           scheduleReminders(ctx.chat.id, userId, allTodos, lang);
@@ -648,6 +652,25 @@ export async function handleVoice(ctx: Context) {
         pendingImage.tasks,
       );
       pendingImageTasks.delete(userId);
+      clearAwaitingImageFollowup(userId);
+      return;
+    }
+
+    // Check for awaiting image followup state (when user sends voice after image without using buttons)
+    const awaitingImage = getAwaitingImageFollowup(userId);
+    if (awaitingImage) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch {}
+      await handleVoiceWithImageContext(
+        ctx,
+        userId,
+        transcript,
+        lang,
+        awaitingImage.imageData.tasks,
+      );
+      pendingImageTasks.delete(userId);
+      clearAwaitingImageFollowup(userId);
       return;
     }
 
@@ -883,7 +906,7 @@ export async function handlePlanIntent(
   // Save non-conflicting tasks immediately
   if (ctx.chat && cleanTodos.length > 0) {
     const cleanAnalysis = { ...analysis, todos: cleanTodos };
-    savePlan(ctx.chat.id, userId, cleanAnalysis);
+    savePlan(ctx.chat.id, userId, cleanAnalysis, 'voice');
   }
 
   const pendingData = {
@@ -895,6 +918,7 @@ export async function handlePlanIntent(
     resolvedTodos: analysis.todos,
     reminderIndex: 0,
     conflictIndex: 0,
+    source: 'voice' as const,
   };
 
   const pendingId = savePending(pendingData);
@@ -920,7 +944,7 @@ export async function handlePlanIntent(
   } catch {}
 
   if (ctx.chat) {
-    savePlan(ctx.chat.id, userId, analysis);
+    savePlan(ctx.chat.id, userId, analysis, 'voice');
     if (analysis.timeframe === "day") {
       const timedTasks = analysis.todos.filter((t) => t.time);
       if (timedTasks.length > 0) {
@@ -1621,6 +1645,7 @@ async function handleCommandIntent(
       intentResult.target_time ||
       intentResult.after_time ||
       intentResult.priority_filter ||
+      intentResult.source_filter ||
       hasDateRange ||
       hasPeriod;
 
@@ -1630,6 +1655,8 @@ async function handleCommandIntent(
         if (extracted.target_date) intentResult.target_date = extracted.target_date;
         if (extracted.target_time) intentResult.target_time = extracted.target_time;
         if (extracted.after_time) intentResult.after_time = extracted.after_time;
+        if (extracted.priority_filter) intentResult.priority_filter = extracted.priority_filter;
+        if (extracted.source) intentResult.source_filter = extracted.source;
         if (extracted.date_from) intentResult.date_from = extracted.date_from;
         if (extracted.date_to) intentResult.date_to = extracted.date_to;
         if (extracted.date_ranges && extracted.date_ranges.length > 0) {
@@ -1647,6 +1674,7 @@ async function handleCommandIntent(
           intentResult.target_time ||
           intentResult.after_time ||
           intentResult.priority_filter ||
+          intentResult.source_filter ||
           hasDateRange ||
           hasPeriod;
       }
@@ -1717,25 +1745,27 @@ async function handleCommandIntent(
       }
     } else {
       if (hasPeriod && !hasDateRange && !intentResult.target_date) {
+        // Use Kazakhstan time (UTC+5) for date calculations
         const now = new Date();
-        const today = now.toISOString().slice(0, 10);
+        const kzToday = utcToKzLocalDate(now.toISOString());
         const period = intentResult.period;
         if (period === "today") {
-          intentResult.target_date = today;
+          intentResult.target_date = kzToday;
         } else if (period === "tomorrow") {
-          const tmr = new Date(now);
-          tmr.setDate(tmr.getDate() + 1);
-          intentResult.target_date = tmr.toISOString().slice(0, 10);
+          const tmr = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+          intentResult.target_date = utcToKzLocalDate(tmr.toISOString());
         } else if (period === "week") {
-          const weekStart = new Date(now);
-          weekStart.setDate(now.getDate() - now.getDay() + 1);
+          const kzNow = new Date(now.getTime() + 5 * 60 * 60 * 1000); // KZ time
+          const weekStart = new Date(kzNow);
+          weekStart.setDate(kzNow.getDate() - kzNow.getDay() + 1);
           const weekEnd = new Date(weekStart);
           weekEnd.setDate(weekStart.getDate() + 6);
           intentResult.date_from = weekStart.toISOString().slice(0, 10);
           intentResult.date_to = weekEnd.toISOString().slice(0, 10);
         } else if (period === "month") {
-          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-          const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+          const kzNow = new Date(now.getTime() + 5 * 60 * 60 * 1000); // KZ time
+          const monthStart = new Date(kzNow.getFullYear(), kzNow.getMonth(), 1);
+          const monthEnd = new Date(kzNow.getFullYear(), kzNow.getMonth() + 1, 0);
           intentResult.date_from = monthStart.toISOString().slice(0, 10);
           intentResult.date_to = monthEnd.toISOString().slice(0, 10);
         }
@@ -1749,6 +1779,7 @@ async function handleCommandIntent(
             priority: intentResult.priority_filter ?? null,
             dateFrom: intentResult.date_from ?? null,
             dateTo: intentResult.date_to ?? null,
+            source: intentResult.source_filter ?? null,
           })
         : getUserTasks(userId);
       if (tasks.length === 0) {
