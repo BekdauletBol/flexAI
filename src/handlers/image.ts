@@ -38,6 +38,10 @@ export interface PendingImageData {
   source: string;
   analysis: ScreenshotAnalysis;
   expiresAt: number;
+  lang?: string;
+  // one-by-one resolution state
+  oneByOneIndex?: number;
+  selections?: boolean[]; // true = add, false = skip
 }
 
 export const pendingImageTasks = new Map<number, PendingImageData>();
@@ -113,7 +117,9 @@ export async function handleImage(ctx: Context) {
       tasks: analysis.events,
       source: analysis.source_app,
       analysis,
+      lang,
       expiresAt: Date.now() + 5 * 60 * 1000, // 5 min TTL
+      selections: new Array(analysis.events.length).fill(undefined),
     });
 
     try {
@@ -126,14 +132,28 @@ export async function handleImage(ctx: Context) {
     const keyboard = new InlineKeyboard()
       .text(
         lang === "ru"
-          ? `Добавить все (${analysis.events.length})`
+          ? `✅ Добавить все (${analysis.events.length})`
           : lang === "kk"
-            ? `Барлығын қосу (${analysis.events.length})`
-            : `Add all (${analysis.events.length})`,
+            ? `✅ Барлығын қосу (${analysis.events.length})`
+            : `✅ Add all (${analysis.events.length})`,
         `img_add_all_${userId}`,
       )
+      .row()
       .text(
-        lang === "ru" ? "Отмена" : lang === "kk" ? "Болдырмау" : "Cancel",
+        lang === "ru"
+          ? "🔢 По одному"
+          : lang === "kk"
+            ? "🔢 Бір-бірден"
+            : "🔢 One by one",
+        `img_one_by_one_${userId}`,
+      )
+      .row()
+      .text(
+        lang === "ru"
+          ? "❌ Отмена"
+          : lang === "kk"
+            ? "❌ Болдырмау"
+            : "❌ Cancel",
         `img_cancel_${userId}`,
       );
 
@@ -433,15 +453,16 @@ function buildAnalysisMessage(
   lines.push(SEP);
   lines.push("");
   if (lang === "ru") {
-    lines.push(
-      "Отправь голосовое — скажи что добавить, объединить или проверить.",
-    );
+    lines.push("Выбери действие ниже или отправь голосовое:");
+    lines.push('— "Добавь всё" / "Добавь только утро" / "Пропусти конфликты"');
   } else if (lang === "kk") {
+    lines.push("Төмендегі әрекетті таңда немесе дауыстық хабар жібер:");
     lines.push(
-      "Дауыстық хабар жібер — не қосу, біріктіру немесе тексеру керектігін айт.",
+      '— "Барлығын қос" / "Тек таңертеңгілікті қос" / "Қайшылықтарды өткіз"',
     );
   } else {
-    lines.push("Send a voice message — tell me what to add, merge, or check.");
+    lines.push("Choose an action below or send a voice message:");
+    lines.push('— "Add all" / "Add only morning ones" / "Skip conflicts"');
   }
 
   return lines.join("\n");
