@@ -33,6 +33,9 @@ const CW = PAGE_W - M * 2;
 // MAX_Y must be ABOVE the bottom margin (PAGE_H - M) to prevent auto page-breaks
 const MAX_Y = PAGE_H - M - 10;
 
+const TIMELINE_LINE_X = 85;
+const TASK_START_X = 110;
+
 function fmtDate(d: Date): string {
   const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return `${mo[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
@@ -48,6 +51,33 @@ function formatDate(dateStr: string, lang: string): string {
 
 function drawBg(doc: PDFKit.PDFDocument) {
   doc.save().rect(0, 0, PAGE_W, PAGE_H).fill(BG).restore();
+}
+
+function drawPriorityBadge(doc: PDFKit.PDFDocument, priority: string, x: number, y: number): number {
+  const pColor = priority === 'high' ? PRI_HIGH : priority === 'medium' ? PRI_MED : PRI_LOW;
+  const pLabel = priority.toUpperCase();
+  doc.font('Bold').fontSize(8).fillColor(pColor);
+  const pWidth = doc.widthOfString(pLabel) + 10;
+  doc.save().roundedRect(x, y - 2, pWidth, 14, 3).fillOpacity(0.15).fill(pColor).restore();
+  doc.save().roundedRect(x, y - 2, pWidth, 14, 3).lineWidth(1).strokeColor(pColor).strokeOpacity(0.5).stroke().restore();
+  doc.text(pLabel, x, y, { width: pWidth, align: 'center' });
+  return x + pWidth + 6;
+}
+
+function extractTags(todos: TodoItem[]): string[] {
+  const tags = new Set<string>();
+  for (const t of todos) {
+    const words = t.task.split(/\s+/);
+    for (const w of words) {
+      if (w.startsWith('#') && w.length > 1) {
+        tags.add(w.substring(1).toLowerCase());
+      }
+    }
+    if (t.priority) tags.add(t.priority);
+    if (t.location) tags.add('location');
+    if (t.time) tags.add('scheduled');
+  }
+  return Array.from(tags).slice(0, 10);
 }
 
 export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
@@ -218,113 +248,44 @@ export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
   });
 }
 
-export async function generateReportPdf(tasks: TodoItem[], language: string): Promise<Buffer> {
-  const fonts = getFonts(language);
-  const now = new Date();
+export async function generateReportPdf(
+  tasks: TodoItem[],
+  language: string,
+  options?: {
+    title?: string;
+    summary?: string;
+    tags?: string[];
+    transcript?: string;
+  }
+): Promise<Buffer> {
   const isRu = language === 'ru';
   const isKk = language === 'kk';
+  const titleText = options?.title
+    || (isRu ? 'ОТЧЕТ ПО ЗАДАЧАМ' : isKk ? 'ТАПСЫРМАЛАР ЕСЕБІ' : 'TASK REPORT');
 
-  const titleText = isRu ? 'ОТЧЕТ ПО ЗАДАЧАМ' : isKk ? 'ТАПСЫРМАЛАР ЕСЕБІ' : 'TASK REPORT';
-  const pendingLabel = isRu ? 'В ОЖИДАНИИ' : isKk ? 'КҮТУДЕ' : 'PENDING';
-  const completedLabel = isRu ? 'ВЫПОЛНЕНО' : isKk ? 'ОРЫНДАЛДЫ' : 'COMPLETED';
-  const statsLabel = isRu ? 'Статистика' : isKk ? 'Статистика' : 'Stats';
+  const pending = tasks.filter(t => !t.done);
+  const completed = tasks.filter(t => t.done);
 
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: M, bufferPages: true });
-    const chunks: Buffer[] = [];
-    doc.on('data', (c: Buffer) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-
-    doc.registerFont('Regular', fonts.regular);
-    doc.registerFont('Bold', fonts.bold);
-
-    doc.on('pageAdded', () => drawBg(doc));
-    drawBg(doc);
-
-    let y = M;
-
-    // Title
-    doc.font('Bold').fontSize(28).fillColor(TEXT_PRI);
-    doc.text(titleText, M, y, { width: CW });
-    y = doc.y + 4;
-
-    doc.font('Regular').fontSize(13).fillColor(TEXT_SEC);
-    doc.text(fmtDate(now), M, y, { width: CW });
-    y = doc.y + 14;
-
-    // Accent line
-    doc.save().moveTo(M, y).lineTo(PAGE_W - M, y).lineWidth(1).strokeColor(BORDER).stroke().restore();
-    y += 16;
-
-    const pending = tasks.filter(t => !t.done);
-    const completed = tasks.filter(t => t.done);
-
-    function drawTaskTable(label: string, items: TodoItem[], startY: number): number {
-      if (items.length === 0) return startY;
-
-      doc.font('Bold').fontSize(11).fillColor(ACCENT);
-      doc.text(label, M, startY, { characterSpacing: 2, width: CW });
-      let yy = doc.y + 8;
-
-      for (const todo of items) {
-        if (yy > MAX_Y - 40) {
-          doc.addPage();
-          yy = M;
-        }
-
-        const pColor = todo.priority === 'high' ? PRI_HIGH : todo.priority === 'medium' ? PRI_MED : PRI_LOW;
-        const priorityStr = todo.priority === 'high' ? (isRu ? 'ВЫСОКИЙ' : isKk ? 'ЖОҒАРЫ' : 'HIGH')
-                         : todo.priority === 'medium' ? (isRu ? 'СРЕДНИЙ' : isKk ? 'ОРТА' : 'MEDIUM')
-                         : (isRu ? 'НИЗКИЙ' : isKk ? 'ТӨМЕН' : 'LOW');
-        const timeStr = todo.time ? `  ${todo.time}` : '';
-        const locationStr = todo.location ? `  ${todo.location}` : '';
-        const dateStr = todo.date ? `  ${formatDate(todo.date, language)}` : '';
-
-        // Row background
-        doc.save().roundedRect(M, yy - 1, CW, 22, 4).fillOpacity(1).fill(CARD_BG).restore();
-        doc.save().roundedRect(M, yy - 1, CW, 22, 4).lineWidth(1).strokeColor(BORDER).stroke().restore();
-
-        // Task name + metadata
-        doc.font('Regular').fontSize(12).fillColor(TEXT_PRI);
-        const meta = `${todo.task}${timeStr}${locationStr}${dateStr}`;
-        doc.text(meta, M + 8, yy + 3, { width: CW * 0.65 });
-
-        // Priority badge
-        doc.font('Bold').fontSize(9).fillColor(pColor);
-        doc.text(priorityStr, M + CW - 80, yy + 4, { width: 70, align: 'right' });
-
-        yy += 28;
-      }
-
-      return yy + 8;
-    }
-
-    y = drawTaskTable(pendingLabel, pending, y);
-    y = drawTaskTable(completedLabel, completed, y);
-
-    // Stats section
-    if (y > MAX_Y - 40) { doc.addPage(); y = M; }
-
-    doc.save().moveTo(M, y).lineTo(PAGE_W - M, y).lineWidth(1).strokeColor(BORDER).stroke().restore();
-    y += 12;
-
-    doc.font('Bold').fontSize(11).fillColor(ACCENT);
-    doc.text(statsLabel.toUpperCase(), M, y, { characterSpacing: 2, width: CW });
-    y = doc.y + 6;
-
-    doc.font('Regular').fontSize(12).fillColor(TEXT_SEC);
-    const total = tasks.length;
-    const doneCount = completed.length;
-    const statsText = isRu
-      ? `Всего: ${total}  |  Выполнено: ${doneCount}  |  Осталось: ${total - doneCount}`
+  const summaryText = options?.summary
+    || (isRu
+      ? `Всего задач: ${tasks.length}. Выполнено: ${completed.length}, осталось: ${pending.length}.`
       : isKk
-      ? `Барлығы: ${total}  |  Орындалды: ${doneCount}  |  Қалды: ${total - doneCount}`
-      : `Total: ${total}  |  Completed: ${doneCount}  |  Remaining: ${total - doneCount}`;
-    doc.text(statsText, M, y, { width: CW });
+        ? `Барлық тапсырмалар: ${tasks.length}. Орындалды: ${completed.length}, қалды: ${pending.length}.`
+        : `Total tasks: ${tasks.length}. Completed: ${completed.length}, remaining: ${pending.length}.`);
 
-    doc.end();
-  });
+  const reportAnalysis: AnalysisResult = {
+    title: titleText,
+    summary: summaryText,
+    todos: tasks,
+    tags: options?.tags || [],
+    language: language as 'ru' | 'en' | 'kk' | 'mixed',
+    raw_transcript: options?.transcript ?? '',
+    key_points: [],
+    timeframe: 'day',
+    intent: 'action',
+  };
+
+  return generatePdf(reportAnalysis);
 }
 
 export async function generateMultiDateReportPdf(

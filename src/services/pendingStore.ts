@@ -1,4 +1,4 @@
-import { AnalysisResult, TodoItem } from '../types/analysis.js';
+import { AnalysisResult, TodoItem, TaskSource } from '../types/analysis.js';
 import { Conflict } from './planStore.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -13,6 +13,7 @@ export interface PendingVoiceNote {
   resolvedTodos: TodoItem[];
   reminderIndex: number;
   conflictIndex?: number;
+  source: TaskSource;
 }
 
 const pendingNotes = new Map<string, PendingVoiceNote>();
@@ -20,7 +21,8 @@ const pendingNotes = new Map<string, PendingVoiceNote>();
 export type UserFlowState = 
   | { type: 'awaiting_reschedule'; pendingId: string; conflictIndex?: number; customField?: 'date' | 'time' }
   | { type: 'awaiting_custom_reminder'; pendingId: string; taskIndex: number }
-  | { type: 'awaiting_clarification'; transcript: string; chatId: number; statusMsgId: number };
+  | { type: 'awaiting_clarification'; transcript: string; chatId: number; statusMsgId: number }
+  | { type: 'awaiting_image_followup'; chatId: number; imageData: any; expiresAt: number };
 
 const userFlows = new Map<number, UserFlowState>();
 
@@ -91,6 +93,34 @@ export function getUserFlowState(userId: number): UserFlowState | undefined {
 
 export function clearUserFlowState(userId: number) {
   userFlows.delete(userId);
+}
+
+export function setAwaitingImageFollowup(userId: number, chatId: number, imageData: any) {
+  userFlows.set(userId, {
+    type: 'awaiting_image_followup',
+    chatId,
+    imageData,
+    expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+  });
+}
+
+export function getAwaitingImageFollowup(userId: number): { imageData: any } | undefined {
+  const state = userFlows.get(userId);
+  if (state && state.type === 'awaiting_image_followup') {
+    if (Date.now() > state.expiresAt) {
+      userFlows.delete(userId);
+      return undefined;
+    }
+    return { imageData: state.imageData };
+  }
+  return undefined;
+}
+
+export function clearAwaitingImageFollowup(userId: number) {
+  const state = userFlows.get(userId);
+  if (state && state.type === 'awaiting_image_followup') {
+    userFlows.delete(userId);
+  }
 }
 
 // ─── Interactive Reschedule State ──────────────────────────────────────────────

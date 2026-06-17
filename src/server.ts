@@ -106,7 +106,7 @@ export function createServer(bot?: Bot) {
     const uid = plan?.userId || Number(chatId);
     const userSettings = getUserConfig(uid);
     const offset = userSettings?.reminder_offset_minutes;
-    rescheduleReminder(Number(chatId), taskId, todo.task, newTime, language, offset);
+    rescheduleReminder(Number(chatId), taskId, todo.task, newTime, language, offset, todo.date);
 
     logger.info({ chatId, taskId, newTime }, 'Task rescheduled via API');
     res.json({ success: true, todo });
@@ -136,7 +136,7 @@ export function createServer(bot?: Bot) {
       res.status(400).json({ error: 'Missing chatId, userId, or task' });
       return;
     }
-    const todo = addTodoToPlan(Number(chatId), Number(userId), task, time || '', priority || 'medium', date || '');
+    const todo = addTodoToPlan(Number(chatId), Number(userId), task, time || '', priority || 'medium', date || '', 'manual');
     logger.info({ userId, task: todo.task }, 'Task created via API');
     res.json({ success: true, todo });
   });

@@ -1,5 +1,6 @@
-import { AnalysisResult, TodoItem, TimeFrame } from '../types/analysis.js';
+import { AnalysisResult, TodoItem, TimeFrame, TaskSource } from '../types/analysis.js';
 import { db, detectTimeConflicts } from './db.js';
+import { kzLocalToUTC } from '../utils/timezone.js';
 export { detectTimeConflicts };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ function rowToStoredPlan(row: any, todos: any[]): StoredPlan {
       date: t.date || undefined,
       duration: t.duration,
       location: t.location || undefined,
+      source: t.source || undefined,
     })),
   };
 }
@@ -64,7 +66,7 @@ function todoFromRow(t: any): TodoItem {
     date: t.date || undefined,
     duration: t.duration,
     location: t.location || undefined,
-
+    source: t.source || undefined,
   };
 }
 
@@ -93,8 +95,8 @@ const stmtDeletePlanHistoriesByDate = db.prepare("SELECT id FROM plan_history WH
 const stmtMarkTodoDoneByUser = db.prepare("UPDATE todos SET done = 1, completed_at = datetime('now') WHERE id = ? AND user_id = ?");
 const stmtCountDoneByUser = db.prepare('SELECT COUNT(*) as c FROM todos WHERE user_id = ? AND done = 1');
 const stmtInsertTodo = db.prepare(`
-  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, plan_history_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, plan_history_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtFindPlanByDate = db.prepare("SELECT id FROM plan_history WHERE user_id = ? AND substr(created_at, 1, 10) = ? ORDER BY created_at DESC LIMIT 1");
 const stmtGetLastPlanIdByChat = db.prepare('SELECT id FROM plan_history WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1');
@@ -113,7 +115,7 @@ export function getConflicts(userId: number, newTodos: TodoItem[]): Conflict[] {
 
 // ─── Plan Operations ──────────────────────────────────────────────────────────
 
-export function savePlan(chatId: number, userId: number, analysis: AnalysisResult) {
+export function savePlan(chatId: number, userId: number, analysis: AnalysisResult, source: TaskSource = 'manual') {
   const defaultDate = new Date().toISOString().substring(0, 10);
 
   // 1. Insert plan_history row
@@ -149,10 +151,10 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
     const taskNorm = todo.task.trim().toLowerCase();
     const todoDate = todo.date || defaultDate;
 
-    // Build a proper ISO datetime for scheduling from date + time
+    // Build a proper ISO datetime for scheduling from date + time (convert KZ UTC+5 to UTC)
     let todoDatetime = todo.datetime || null;
     if (!todoDatetime && todo.time && todoDate) {
-      todoDatetime = `${todoDate}T${todo.time}:00`;
+      todoDatetime = kzLocalToUTC(todoDate, todo.time);
     }
 
     const isDuplicate = existingTodos.some((t: any) => {
@@ -173,6 +175,7 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
         todo.date || null,
         todo.duration ?? 30,
         todo.location || null,
+        todo.source || source,
         planHistoryId
       );
       // Also add to existingTodos to prevent intra-batch duplicates
@@ -206,6 +209,7 @@ export function getTasksFiltered(userId: number, filters: {
   priority?: string | null;
   dateFrom?: string | null;
   dateTo?: string | null;
+  source?: TaskSource | null;
 }): TodoItem[] {
   let query = 'SELECT * FROM todos WHERE user_id = ? AND done = 0';
   const params: any[] = [userId];
@@ -234,6 +238,10 @@ export function getTasksFiltered(userId: number, filters: {
     query += ' AND priority = ?';
     params.push(filters.priority);
   }
+  if (filters.source) {
+    query += ' AND source = ?';
+    params.push(filters.source);
+  }
 
   query += ' ORDER BY date ASC, time ASC';
   const rows = db.prepare(query).all(...params) as any[];
@@ -247,14 +255,14 @@ export function completeTask(chatId: number, taskId: string, done: boolean): Tod
 }
 
 export function rescheduleTask(chatId: number, taskId: string, newTime: string, newDate?: string): TodoItem | undefined {
-  const newDatetime = newDate && newTime ? `${newDate}T${newTime}:00` : null;
+  const newDatetime = newDate && newTime ? kzLocalToUTC(newDate, newTime) : null;
   stmtUpdateTodoTimeByChat.run(newTime, newDatetime || null, newDate || null, taskId, chatId);
   const row = stmtGetTodoById.get(taskId) as any;
   return row ? todoFromRow(row) : undefined;
 }
 
 export function updateTaskDateTime(userId: number, taskId: string, newDate: string, newTime: string): TodoItem | undefined {
-  const newDatetime = `${newDate}T${newTime}:00`;
+  const newDatetime = kzLocalToUTC(newDate, newTime);
   stmtUpdateTodoDateTimeByUser.run(newTime, newDate, newDatetime, taskId, userId);
   const row = stmtGetTodoById.get(taskId) as any;
   return row ? todoFromRow(row) : undefined;
@@ -363,16 +371,19 @@ export function getAllPlansForLLM(userId: number): string {
   })), null, 2);
 }
 
-export function addTodoToPlan(chatId: number, userId: number, task: string, time: string, priority: string, date: string): TodoItem {
+export function addTodoToPlan(chatId: number, userId: number, task: string, time: string, priority: string, date: string, source: TaskSource = 'manual'): TodoItem {
   const now = new Date();
+  const todoDate = date || now.toISOString().substring(0, 10);
   const todo: TodoItem = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     task,
     time: time || undefined,
     priority: (priority as 'high' | 'medium' | 'low') || 'medium',
     duration: 30,
-    date: date || now.toISOString().substring(0, 10),
+    date: todoDate,
+    datetime: time ? kzLocalToUTC(todoDate, time) : undefined,
     done: false,
+    source,
   };
 
   const today = date || now.toISOString().substring(0, 10);
@@ -409,8 +420,8 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
 
   stmtInsertTodo.run(
     todo.id, chatId, userId, todo.task, todo.priority || 'medium',
-    todo.done ? 1 : 0, todo.time || null, null, todo.date || null,
-    todo.duration ?? 30, todo.location || null, planId
+    todo.done ? 1 : 0, todo.time || null, todo.datetime || null, todo.date || null,
+    todo.duration ?? 30, todo.location || null, todo.source || 'manual', planId
   );
 
   console.log(`[PlanStore] Added todo: "${task}" at ${time} for ${today}`);

@@ -9,7 +9,7 @@ import {
   routeByIntent,
   continueFlow,
 } from "./handlers/voice.js";
-import { handleImage, pendingImageTasks } from "./handlers/image.js";
+import { handleImage, pendingImageTasks, mapSourceAppToTaskSource } from "./handlers/image.js";
 import { initScheduler } from "./services/scheduler.js";
 import { createServer, resetStartTime } from "./server.js";
 import {
@@ -565,7 +565,7 @@ bot.callbackQuery(/^conflict_keep_all_(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
 
   if (ctx.chat) {
-    savePlan(ctx.chat.id, pending.userId, pending.analysis);
+    savePlan(ctx.chat.id, pending.userId, pending.analysis, pending.source);
   }
 
   if (ctx.callbackQuery.message) {
@@ -656,7 +656,7 @@ bot.callbackQuery(/^conflict_keep_idx_(.+)_(\d+)$/, async (ctx) => {
 
   if (nextIndex >= pending.conflicts.length) {
     if (ctx.chat) {
-      savePlan(ctx.chat.id, pending.userId, pending.analysis);
+      savePlan(ctx.chat.id, pending.userId, pending.analysis, pending.source);
     }
     if (ctx.callbackQuery.message) {
       try {
@@ -751,7 +751,7 @@ bot.callbackQuery(/^conflict_skip_idx_(.+)_(\d+)$/, async (ctx) => {
 
   if (nextIndex >= pending.conflicts.length) {
     if (ctx.chat) {
-      savePlan(ctx.chat.id, pending.userId, pending.analysis);
+      savePlan(ctx.chat.id, pending.userId, pending.analysis, pending.source);
     }
     if (ctx.callbackQuery.message) {
       try {
@@ -982,7 +982,7 @@ bot.callbackQuery("rs_confirm", async (ctx) => {
     if (pending) {
       const nextIndex = conflictIndex + 1;
       if (nextIndex >= pending.conflicts.length) {
-        if (ctx.chat) savePlan(ctx.chat.id, userId, pending.analysis);
+        if (ctx.chat) savePlan(ctx.chat.id, userId, pending.analysis, pending.source);
         await ctx.editMessageText(
           lang === "ru"
             ? "Все конфликты разрешены."
@@ -1039,7 +1039,7 @@ bot.callbackQuery(/^conflict_keep_(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
 
   if (ctx.chat) {
-    savePlan(ctx.chat.id, pending.userId, pending.analysis);
+    savePlan(ctx.chat.id, pending.userId, pending.analysis, pending.source);
   }
 
   if (ctx.callbackQuery.message) {
@@ -1291,6 +1291,7 @@ bot.callbackQuery(/^img_add_all_(\d+)$/, async (ctx) => {
     date: t.date || undefined,
     duration: t.duration_minutes || 30,
     location: undefined,
+    source: mapSourceAppToTaskSource(data.source),
   }));
 
   const analysis = {
@@ -1307,7 +1308,7 @@ bot.callbackQuery(/^img_add_all_(\d+)$/, async (ctx) => {
   };
 
   if (ctx.chat) {
-    savePlan(ctx.chat.id, userId, analysis);
+    savePlan(ctx.chat.id, userId, analysis, mapSourceAppToTaskSource(data.source));
     const timed = todos.filter((t) => t.time);
     if (timed.length > 0) scheduleReminders(ctx.chat.id, userId, todos, "ru");
   }
@@ -1574,6 +1575,7 @@ async function saveSelectedImageTasks(
     date: t.date || undefined,
     duration: t.duration_minutes || 30,
     location: undefined,
+    source: mapSourceAppToTaskSource(data.source),
   }));
 
   const analysis = {
@@ -1590,7 +1592,7 @@ async function saveSelectedImageTasks(
   };
 
   if (ctx.chat) {
-    savePlan(ctx.chat.id, userId, analysis);
+    savePlan(ctx.chat.id, userId, analysis, mapSourceAppToTaskSource(data.source));
     const timed = todos.filter((t: any) => t.time);
     if (timed.length > 0) scheduleReminders(ctx.chat.id, userId, todos, lang);
   }
@@ -1786,7 +1788,7 @@ bot.on("message:text", async (ctx) => {
         return;
       }
 
-      if (ctx.chat) savePlan(ctx.chat.id, userId, pending.analysis);
+      if (ctx.chat) savePlan(ctx.chat.id, userId, pending.analysis, pending.source);
       await startDeliveryFlow(ctx, pending);
       return;
     } else if (!match) {

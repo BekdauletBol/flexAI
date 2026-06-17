@@ -2,6 +2,7 @@ import { logger } from '../logger.js';
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { kzLocalToUTC } from '../utils/timezone.js';
 
 const DB_PATH = process.env.FLEXAI_DB_PATH
   ? path.resolve(process.env.FLEXAI_DB_PATH)
@@ -45,6 +46,7 @@ db.exec(`
     date TEXT,
     duration INTEGER NOT NULL DEFAULT 30,
     location TEXT,
+    source TEXT CHECK(source IN ('teams','telegram','voice','manual')),
     completed_at TEXT,
     snoozed_until TEXT,
     PRIMARY KEY (id),
@@ -56,6 +58,7 @@ db.exec(`
 try { db.exec('ALTER TABLE todos ADD COLUMN completed_at TEXT'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN snoozed_until TEXT'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN plan_history_id INTEGER REFERENCES plan_history(id)'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN source TEXT'); } catch {}
 
 // Plan history table for accumulated plans (multiple per user)
 db.exec(`
@@ -109,8 +112,8 @@ const stmtUpsertPlan = db.prepare(`
 
 // Prepared statements — todos
 const stmtInsertTodo = db.prepare(`
-  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, plan_history_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, plan_history_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtGetTodosByChat = db.prepare('SELECT * FROM todos WHERE chat_id = ?');
 const stmtGetTodosByUser = db.prepare('SELECT * FROM todos WHERE user_id = ?');
@@ -187,6 +190,7 @@ export function migrateFromJson() {
             todo.date || null,
             todo.duration ?? 30,
             todo.location || null,
+            todo.source || 'manual',  // legacy migration
             null  // plan_history_id — legacy migration
           );
         }
@@ -264,6 +268,7 @@ export function savePlan(chatId: number, userId: number, data: {
         todo.date || null,
         todo.duration ?? 30,
         todo.location || null,
+        todo.source || null,
         null  // plan_history_id — legacy plan has none
       );
     }
@@ -323,7 +328,7 @@ export function completeTask(chatId: number, taskId: string, done: boolean) {
 }
 
 export function rescheduleTask(chatId: number, taskId: string, newTime: string, newDate?: string) {
-  const newDatetime = newDate && newTime ? `${newDate}T${newTime}:00` : null;
+  const newDatetime = newDate && newTime ? kzLocalToUTC(newDate, newTime) : null;
   stmtUpdateTodoTime.run(newTime, newDatetime || null, newDate || null, taskId, chatId);
 }
 
@@ -452,6 +457,7 @@ export function insertTodoWithPlanId(todo: any, planHistoryId: number) {
     todo.date || null,
     todo.duration ?? 30,
     todo.location || null,
+    todo.source || null,
     planHistoryId
   );
 }

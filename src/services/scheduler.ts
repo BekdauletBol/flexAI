@@ -3,6 +3,7 @@ import { Bot, InlineKeyboard } from 'grammy';
 import { TodoItem } from '../types/analysis.js';
 import { getUserConfig } from './userConfig.js';
 import { getPlan } from './planStore.js';
+import { kzLocalToUTC, utcToKzLocalTime, utcToKzLocalDate } from '../utils/timezone.js';
 
 interface ScheduledReminder {
   chatId: number;
@@ -72,9 +73,8 @@ export function formatReminderConfirmation(todos: TodoItem[], offsetMinutes: num
     const eventTime = getEventTime(t);
     if (eventTime) {
       const triggerDate = new Date(eventTime.getTime() - offsetMinutes * 60 * 1000);
-      const triggerH = String(triggerDate.getHours()).padStart(2, '0');
-      const triggerM = String(triggerDate.getMinutes()).padStart(2, '0');
-      lines.push(`— ${triggerH}:${triggerM} (${offsetMinutes} min before)`);
+      const triggerTimeKZ = utcToKzLocalTime(triggerDate.toISOString());
+      lines.push(`— ${triggerTimeKZ} (${offsetMinutes} min before)`);
     }
   }
 
@@ -97,9 +97,13 @@ export function scheduleReminders(chatId: number, userId: number, todos: TodoIte
 
     const triggerAt = eventTime.getTime() - offset * 60 * 1000;
 
-    const displayTime = todo.datetime
-      ? `${todo.date || todo.datetime.split('T')[0]} ${todo.time || ''}`
-      : todo.time || '';
+    // Display time in Kazakhstan local time
+    let displayTime = todo.time || '';
+    if (todo.datetime) {
+      const kzDate = utcToKzLocalDate(todo.datetime);
+      const kzTime = utcToKzLocalTime(todo.datetime);
+      displayTime = `${kzDate} ${kzTime}`;
+    }
 
     const reminder: ScheduledReminder = {
       chatId,
@@ -139,10 +143,12 @@ function parseTimeString(timeStr: string): Date | null {
 }
 
 /** Reschedule a single reminder (e.g. from the Mini App). */
-export function rescheduleReminder(chatId: number, taskId: string, task: string, newTime: string, language: string, overrideOffset?: number) {
+export function rescheduleReminder(chatId: number, taskId: string, task: string, newTime: string, language: string, overrideOffset?: number, newDate?: string) {
   const now = new Date();
-  const eventTime = parseTimeString(newTime);
-  if (!eventTime) return;
+  const dateToUse = newDate || new Date().toISOString().substring(0, 10);
+  const utcDateTime = kzLocalToUTC(dateToUse, newTime);
+  const eventTime = new Date(utcDateTime);
+  if (isNaN(eventTime.getTime())) return;
 
   const offset = overrideOffset !== undefined ? overrideOffset : 30;
   const triggerAt = eventTime.getTime() - offset * 60 * 1000;
@@ -162,7 +168,7 @@ export function rescheduleReminder(chatId: number, taskId: string, task: string,
   if (existingIndex !== -1) reminders.splice(existingIndex, 1);
 
   reminders.push(reminder);
-  logger.info(`[Scheduler] Rescheduled reminder for "${task}" to ${newTime}`);
+  logger.info(`[Scheduler] Rescheduled reminder for "${task}" to ${newTime} on ${dateToUse}`);
 }
 
 export function updateReminderOffsets(chatId: number, offsetMinutes: number) {
