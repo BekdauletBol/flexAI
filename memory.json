@@ -5,9 +5,14 @@
     "preferences": {},
     "important_dates": [],
     "patterns": {
-      "sleep_time": "23:00"
+      "sleep_time": "22:00",
+      "wake_up_time": "11:00",
+      "work_time": "12:00-13:00",
+      "lunch_time": "13:00-14:00",
+      "dinner_time": "16:00-17:00",
+      "bed_time": "22:00"
     },
     "places": [],
-    "last_updated": "2026-06-17T05:11:27.429Z"
+    "last_updated": "2026-06-17T05:25:22.268Z"
   }
 }
