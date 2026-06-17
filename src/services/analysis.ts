@@ -2,7 +2,6 @@ import OpenAI from 'openai';
 import { config } from '../config.js';
 import { AnalysisResult } from '../types/analysis.js';
 import { v4 as uuid } from 'uuid';
-import { groq, GROQ_MODEL, hasGroq } from './groq.js';
 
 const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
@@ -11,8 +10,34 @@ const fallback = new OpenAI({
   maxRetries: 1,
 });
 
-const llm = hasGroq ? groq : fallback;
-const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
+// Use OpenAI for analysis because structured JSON extraction is more reliable
+// than Groq's Llama models on complex multilingual transcripts.
+const analysisLlm = fallback;
+const ANALYSIS_MODEL = config.openaiModel;
+
+function cleanJsonContent(content: string): string {
+  // Strip markdown code fences and trailing/leading whitespace
+  return content
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+}
+
+function safeJsonParse(content: string): any | null {
+  const cleaned = cleanJsonContent(content);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Try to find the first JSON object in the text
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch { return null; }
+    }
+    return null;
+  }
+}
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timeoutId: NodeJS.Timeout;
@@ -115,8 +140,8 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
 
     console.log(`[Analysis] Analyzing (${transcript.length} chars)...`);
 
-    const response = await withTimeout(llm.chat.completions.create({
-      model: MODEL,
+    const response = await withTimeout(analysisLlm.chat.completions.create({
+      model: ANALYSIS_MODEL,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT + contextPrompt },
         { role: 'user', content: `Analyze this transcript:\n\n"${transcript}"` },
@@ -130,16 +155,17 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
     if (!content) throw new Error('Empty response');
 
     let result: AnalysisResult;
-    try {
-      result = JSON.parse(content) as AnalysisResult;
-    } catch (err) {
-      console.error('[Analysis] JSON Parse Error:', err);
+    const parsed = safeJsonParse(content);
+    if (parsed) {
+      result = parsed as AnalysisResult;
+    } else {
+      console.error('[Analysis] JSON Parse Error');
       console.error('[Analysis] Raw content (first 2000 chars):', content?.substring(0, 2000));
       // Retry with simplified prompt focused only on todos
       try {
         console.log('[Analysis] Retrying with simplified prompt...');
-        const retryResponse = await withTimeout(llm.chat.completions.create({
-          model: MODEL,
+        const retryResponse = await withTimeout(analysisLlm.chat.completions.create({
+          model: ANALYSIS_MODEL,
           messages: [
             { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), datetime ("YYYY-MM-DDTHH:MM:00" or null), duration (number, default 30). Extract EVERY task mentioned, do not skip any. Preserve foreign terms, acronyms, and brand names verbatim. Language: same as transcript.` + contextPrompt },
             { role: 'user', content: transcript },
@@ -150,7 +176,9 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
         }), 120000);
         const retryContent = retryResponse.choices[0]?.message?.content;
         if (retryContent) {
-          result = JSON.parse(retryContent) as AnalysisResult;
+          const retryParsed = safeJsonParse(retryContent);
+          if (!retryParsed) throw new Error('Retry JSON parse failed');
+          result = retryParsed as AnalysisResult;
           result.todos = result.todos || [];
           console.log(`[Analysis] Retry succeeded: ${result.todos.length} todos`);
         } else {
