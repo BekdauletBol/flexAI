@@ -43,14 +43,19 @@ COPY --from=builder --chown=appuser:appgroup /app/package.json ./
 
 RUN npm rebuild better-sqlite3
 
+# Create /app dirs
 RUN mkdir -p /app/temp /app/data /app/logs && \
     chown -R appuser:appgroup /app
 
+# Create /data as root so it always exists even without a mounted volume
+# Fly will overlay this with the persistent volume when mounted
+RUN mkdir -p /data && chown appuser:appgroup /data
+
 USER appuser
 
-EXPOSE 3000
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
 CMD ["node", "dist/index.js"]
