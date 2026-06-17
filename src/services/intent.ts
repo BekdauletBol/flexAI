@@ -153,7 +153,24 @@ export function quickIntentOverride(
     "pdf",
     "пдф",
   ];
+  const dateKeywords = [
+    "сегодня", "завтра", "вчера", "позавчера", "послезавтра",
+    "today", "tomorrow", "yesterday",
+    "за сегодня", "за завтра", "за вчера",
+    "на сегодня", "на завтра",
+    "за эту неделю", "за этот месяц", "за этот год",
+    "на этой неделе", "на следующей неделе",
+    "this week", "last week", "next week",
+    "this month", "last month",
+    "between", "между",
+  ];
+  const hasDateContext = dateKeywords.some((k) => lower.includes(k));
+
   if (reportWords.some((w) => lower.includes(w))) {
+    if (hasDateContext) {
+      console.log("[Intent] Quick override → report with date context, deferring to LLM");
+      return null;
+    }
     console.log("[Intent] Quick override → report");
     return {
       intent: "report",
@@ -193,12 +210,20 @@ export async function detectIntent(transcript: string): Promise<IntentResult> {
     "baseURL:",
     config.openaiBaseUrl,
   );
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const systemPromptWithDate = `Today is ${dateStr}.\n\n${SYSTEM_PROMPT}`;
   try {
     const response = await withTimeout(
       llm.chat.completions.create({
         model: MODEL,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPromptWithDate },
           { role: "user", content: transcript },
         ],
         response_format: { type: "json_object" },
@@ -406,6 +431,51 @@ export async function extractViewInfo(
     return JSON.parse(content) as ViewExtraction;
   } catch (error) {
     console.error("[Intent] View extraction failed:", error);
+    return null;
+  }
+}
+
+export interface ReportExtraction {
+  target_date?: string;
+  target_time?: string;
+  after_time?: string;
+  date_from?: string;
+  date_to?: string;
+  date_ranges?: DateRange[];
+  period?: "today" | "tomorrow" | "week" | "month" | "all";
+}
+
+export async function extractReportInfo(
+  transcript: string,
+): Promise<ReportExtraction | null> {
+  try {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+    const response = await withTimeout(
+      llm.chat.completions.create({
+        model: MODEL,
+        messages: [
+          {
+            role: "system",
+            content: `Extract report date filters from the user's message. Today is ${dateStr}. Return ONLY JSON: { "target_date": "YYYY-MM-DD or null", "target_time": "HH:MM or null", "after_time": "HH:MM or null", "date_from": "YYYY-MM-DD or null", "date_to": "YYYY-MM-DD or null", "date_ranges": [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}], "period": "today|tomorrow|week|month|all or null" }`,
+          },
+          { role: "user", content: transcript },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.1,
+      }),
+      60000,
+    );
+    const content = response.choices[0]?.message?.content;
+    if (!content) return null;
+    return JSON.parse(content) as ReportExtraction;
+  } catch (error) {
+    console.error("[Intent] Report extraction failed:", error);
     return null;
   }
 }

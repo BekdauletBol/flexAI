@@ -39,6 +39,8 @@ import {
   setUserState,
   clearUserState,
   UserState,
+  getUserFlowState,
+  getRescheduleState,
 } from "../services/pendingStore.js";
 import {
   buildConflictMessage,
@@ -57,6 +59,8 @@ import {
   extractMemoryUpdate,
   quickIntentOverride,
   detectTranscriptLanguage,
+  extractRescheduleInfo,
+  extractReportInfo,
 } from "../services/intent.js";
 import { getUserMemory, updateUserMemory } from "../services/memoryStore.js";
 import {
@@ -101,6 +105,116 @@ function getReminderLabel(minutes: number, lang: string): string {
   if (lang === "ru") return `Напомню за ${minutes} мин.`;
   if (lang === "kk") return `${minutes} мин. бұрын еске саламын.`;
   return `I'll remind you ${minutes} min before.`;
+}
+
+function parseNaturalTime(input: string): string | null {
+  const match = input.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (match) {
+    const h = parseInt(match[1]);
+    const m = parseInt(match[2]);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+  }
+
+  const timeWords: Record<string, number> = {
+    "ноль": 0, "нуль": 0, "zero": 0,
+    "один": 1, "одна": 1, "одно": 1, "one": 1,
+    "два": 2, "две": 2, "two": 2,
+    "три": 3, "three": 3,
+    "четыре": 4, "four": 4,
+    "пять": 5, "five": 5,
+    "шесть": 6, "six": 6,
+    "семь": 7, "seven": 7,
+    "восемь": 8, "eight": 8,
+    "девять": 9, "nine": 9,
+    "десять": 10, "ten": 10,
+    "одиннадцать": 11, "eleven": 11,
+    "двенадцать": 12, "twelve": 12,
+    "тринадцать": 13, "thirteen": 13,
+    "четырнадцать": 14, "fourteen": 14,
+    "пятнадцать": 15, "fifteen": 15,
+    "шестнадцать": 16, "sixteen": 16,
+    "семнадцать": 17, "seventeen": 17,
+    "восемнадцать": 18, "eighteen": 18,
+    "девятнадцать": 19, "nineteen": 19,
+    "двадцать": 20, "twenty": 20,
+    "двадцать один": 21, "twenty one": 21,
+    "двадцать два": 22, "twenty two": 22,
+    "двадцать три": 23, "twenty three": 23,
+    "pm": -1, "am": -2,
+  };
+
+  const lower = input.trim().toLowerCase();
+
+  const explicitMatch = lower.match(
+    /^(\d{1,2})\s*(час|часа|часов|hour|hours|ч\.)\s*(\d{1,2})?\s*(мин|минут|minutes?|м\.)?$/i
+  );
+  if (explicitMatch) {
+    const h = parseInt(explicitMatch[1]);
+    const m = explicitMatch[3] ? parseInt(explicitMatch[3]) : 0;
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+  }
+
+  const words = lower.split(/\s+/);
+  const hourIdx = words.findIndex((w) =>
+    ["час", "часа", "часов", "hour", "hours", "ч."].includes(w)
+  );
+  if (hourIdx > 0) {
+    const hourWord = words.slice(0, hourIdx).join(" ");
+    const h = timeWords[hourWord];
+    if (h !== undefined && h >= 0 && h <= 23) {
+      let m = 0;
+      const afterHour = words.slice(hourIdx + 1).join(" ");
+      const numMatch = afterHour.match(/^(\d{1,2})/);
+      if (numMatch) m = parseInt(numMatch[1]);
+      else {
+        const mWord = words[hourIdx + 1];
+        if (mWord && timeWords[mWord] !== undefined && timeWords[mWord] >= 0) {
+          m = timeWords[mWord];
+        }
+      }
+      if (m >= 0 && m <= 59) {
+        return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      }
+    }
+  }
+
+  const hhmmWords = lower
+    .replace(/[^а-яёa-z0-9\s]/g, " ")
+    .trim()
+    .split(/\s+/);
+  if (hhmmWords.length === 2) {
+    const h = timeWords[hhmmWords[0]];
+    const m = timeWords[hhmmWords[1]];
+    if (h !== undefined && m !== undefined && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+  }
+
+  if (lower.includes("утра") || lower.includes("am")) {
+    const numMatch = lower.match(/(\d{1,2})/);
+    if (numMatch) {
+      const h = parseInt(numMatch[1]);
+      if (h >= 0 && h <= 12) {
+        return `${String(h).padStart(2, "0")}:00`;
+      }
+    }
+  }
+  if (lower.includes("вечера") || lower.includes("pm")) {
+    const numMatch = lower.match(/(\d{1,2})/);
+    if (numMatch) {
+      let h = parseInt(numMatch[1]);
+      if (h >= 1 && h <= 12) h += 12;
+      if (h >= 0 && h <= 23) {
+        return `${String(h).padStart(2, "0")}:00`;
+      }
+    }
+  }
+
+  return null;
 }
 
 async function applyPendingReminder(
@@ -540,6 +654,36 @@ export async function handleVoice(ctx: Context) {
     const state = getUserState(userId);
     if (state?.flow) {
       await continueFlow(ctx, userId, state, transcript, statusMsg, lang);
+      return;
+    }
+
+    const flowState = getUserFlowState(userId);
+    if (flowState) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch {}
+      await ctx.reply(
+        lang === "ru"
+          ? "Пожалуйста, используйте кнопки для выбора даты и времени."
+          : lang === "kk"
+            ? "Күн мен уақытты таңдау үшін батырмаларды пайдаланыңыз."
+            : "Please use the buttons to select date and time.",
+      );
+      return;
+    }
+
+    const rescheduleState = getRescheduleState(userId);
+    if (rescheduleState) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch {}
+      await ctx.reply(
+        lang === "ru"
+          ? "Пожалуйста, используйте кнопки для выбора даты и времени."
+          : lang === "kk"
+            ? "Күн мен уақытты таңдау үшін батырмаларды пайдаланыңыз."
+            : "Please use the buttons to select date and time.",
+      );
       return;
     }
 
@@ -1239,19 +1383,37 @@ export async function continueFlow(
 
   if (state.flow === "reschedule") {
     if (state.step === "picker") {
-      const idx = parseInt(input.trim()) - 1;
       const tasks = state.pendingTasks;
-      if (isNaN(idx) || !tasks || idx < 0 || idx >= tasks.length) {
+      let selected = null;
+
+      const idx = parseInt(input.trim()) - 1;
+      if (!isNaN(idx) && tasks && idx >= 0 && idx < tasks.length) {
+        selected = tasks[idx];
+      } else if (tasks && tasks.length > 0) {
+        const lower = input.trim().toLowerCase();
+        selected = tasks.find((t: any) =>
+          t.todo.task.toLowerCase().includes(lower) ||
+          lower.includes(t.todo.task.toLowerCase())
+        );
+        if (!selected && tasks.length === 1) {
+          selected = tasks[0];
+        }
+      }
+
+      if (!selected) {
+        const list = tasks
+          ?.map((t: any, i: number) => `${i + 1}. ${t.todo.task}`)
+          .join("\n") || "";
         await ctx.reply(
           lang === "ru"
-            ? "Неверный номер. Попробуйте снова."
+            ? `Не удалось распознать задачу. Попробуйте снова.\n\n${list}`
             : lang === "kk"
-              ? "Қате нөмір. Қайталап көріңіз."
-              : "Invalid number. Try again.",
+              ? `Тапсырма танылмады. Қайталап көріңіз.\n\n${list}`
+              : `Could not identify the task. Try again.\n\n${list}`,
         );
         return;
       }
-      const selected = tasks[idx];
+
       setUserState(userId, {
         flow: "reschedule",
         step: "time",
@@ -1268,18 +1430,23 @@ export async function continueFlow(
     }
 
     if (state.step === "time") {
-      const match = input.trim().match(/^(\d{1,2}):(\d{2})$/);
-      if (!match) {
+      let newTime = parseNaturalTime(input);
+      if (!newTime) {
+        const extracted = await extractRescheduleInfo(input);
+        if (extracted?.newTime) {
+          newTime = extracted.newTime;
+        }
+      }
+      if (!newTime) {
         await ctx.reply(
           lang === "ru"
-            ? "Неверный формат. Используйте HH:MM (например 15:30)."
+            ? "Неверный формат. Используйте HH:MM (например 15:30) или скажите словами."
             : lang === "kk"
-              ? "Қате формат. HH:MM пайдаланыңыз (мысалы 15:30)."
-              : "Invalid format. Use HH:MM (e.g. 15:30).",
+              ? "Қате формат. HH:MM пайдаланыңыз (мысалы 15:30) немесе сөзбен айтыңыз."
+              : "Invalid format. Use HH:MM (e.g. 15:30) or say it in words.",
         );
         return;
       }
-      const newTime = `${match[1].padStart(2, "0")}:${match[2]}`;
       const taskId = state.pendingTaskId;
       if (taskId) {
         const tasks = getUserTasks(userId);
@@ -1390,7 +1557,7 @@ export async function routeByIntent(
       await handleCommandIntent(
         ctx,
         userId,
-        { ...intentResult, command: "report_pdf" },
+        { ...intentResult, command: "report_pdf", raw_transcript: transcript },
         statusMsg,
         lang,
       );
@@ -1445,15 +1612,45 @@ async function handleCommandIntent(
   const command = intentResult.command;
 
   if (command === "report" || command === "report_pdf") {
-    const dateRanges = intentResult.date_ranges;
-    const hasMultiDate = Array.isArray(dateRanges) && dateRanges.length > 1;
-    const hasDateRange = intentResult.date_from || intentResult.date_to;
-    const hasFilters =
+    let dateRanges = intentResult.date_ranges;
+    let hasMultiDate = Array.isArray(dateRanges) && dateRanges.length > 1;
+    let hasDateRange = intentResult.date_from || intentResult.date_to;
+    let hasPeriod = intentResult.period && intentResult.period !== "all";
+    let hasFilters =
       intentResult.target_date ||
       intentResult.target_time ||
       intentResult.after_time ||
       intentResult.priority_filter ||
-      hasDateRange;
+      hasDateRange ||
+      hasPeriod;
+
+    if (!hasFilters && !hasMultiDate && intentResult.raw_transcript) {
+      const extracted = await extractReportInfo(intentResult.raw_transcript);
+      if (extracted) {
+        if (extracted.target_date) intentResult.target_date = extracted.target_date;
+        if (extracted.target_time) intentResult.target_time = extracted.target_time;
+        if (extracted.after_time) intentResult.after_time = extracted.after_time;
+        if (extracted.date_from) intentResult.date_from = extracted.date_from;
+        if (extracted.date_to) intentResult.date_to = extracted.date_to;
+        if (extracted.date_ranges && extracted.date_ranges.length > 0) {
+          intentResult.date_ranges = extracted.date_ranges;
+          dateRanges = extracted.date_ranges;
+          hasMultiDate = extracted.date_ranges.length > 1;
+        }
+        if (extracted.period) {
+          intentResult.period = extracted.period;
+          hasPeriod = extracted.period !== "all";
+        }
+        hasDateRange = intentResult.date_from || intentResult.date_to;
+        hasFilters =
+          intentResult.target_date ||
+          intentResult.target_time ||
+          intentResult.after_time ||
+          intentResult.priority_filter ||
+          hasDateRange ||
+          hasPeriod;
+      }
+    }
 
     if (hasMultiDate) {
       const sections: { label: string; tasks: TodoItem[] }[] = [];
@@ -1519,6 +1716,31 @@ async function handleCommandIntent(
         );
       }
     } else {
+      if (hasPeriod && !hasDateRange && !intentResult.target_date) {
+        const now = new Date();
+        const today = now.toISOString().slice(0, 10);
+        const period = intentResult.period;
+        if (period === "today") {
+          intentResult.target_date = today;
+        } else if (period === "tomorrow") {
+          const tmr = new Date(now);
+          tmr.setDate(tmr.getDate() + 1);
+          intentResult.target_date = tmr.toISOString().slice(0, 10);
+        } else if (period === "week") {
+          const weekStart = new Date(now);
+          weekStart.setDate(now.getDate() - now.getDay() + 1);
+          const weekEnd = new Date(weekStart);
+          weekEnd.setDate(weekStart.getDate() + 6);
+          intentResult.date_from = weekStart.toISOString().slice(0, 10);
+          intentResult.date_to = weekEnd.toISOString().slice(0, 10);
+        } else if (period === "month") {
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+          const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+          intentResult.date_from = monthStart.toISOString().slice(0, 10);
+          intentResult.date_to = monthEnd.toISOString().slice(0, 10);
+        }
+      }
+
       const tasks = hasFilters
         ? getTasksFiltered(userId, {
             date: intentResult.target_date ?? null,
