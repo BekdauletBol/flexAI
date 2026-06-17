@@ -73,6 +73,7 @@ TIME EXTRACTION:
 - If no time or unknown time → set "time" to null (do NOT use "00:00").
 - Parse smartly: "3pm"="15:00", "half past 2"="14:30", "в 8 утра"="08:00".
 - "duration": estimated task duration in minutes (default 30).
+- "datetime": ISO datetime "YYYY-MM-DDTHH:MM:00" combining the task's "date" and "time". Set null if no time is given.
 
 DATE EXTRACTION:
 - If the user mentions a date, extract as "date" in "YYYY-MM-DD" format using the current date context below.
@@ -140,7 +141,7 @@ export async function analyzeTranscript(transcript: string): Promise<AnalysisRes
         const retryResponse = await withTimeout(llm.chat.completions.create({
           model: MODEL,
           messages: [
-            { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), duration (number, default 30). Extract EVERY task mentioned, do not skip any. Preserve foreign terms, acronyms, and brand names verbatim. Language: same as transcript.` + contextPrompt },
+            { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), datetime ("YYYY-MM-DDTHH:MM:00" or null), duration (number, default 30). Extract EVERY task mentioned, do not skip any. Preserve foreign terms, acronyms, and brand names verbatim. Language: same as transcript.` + contextPrompt },
             { role: 'user', content: transcript },
           ],
           response_format: { type: 'json_object' },

@@ -149,6 +149,12 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
     const taskNorm = todo.task.trim().toLowerCase();
     const todoDate = todo.date || defaultDate;
 
+    // Build a proper ISO datetime for scheduling from date + time
+    let todoDatetime = todo.datetime || null;
+    if (!todoDatetime && todo.time && todoDate) {
+      todoDatetime = `${todoDate}T${todo.time}:00`;
+    }
+
     const isDuplicate = existingTodos.some((t: any) => {
       const tDate = t.date || defaultDate;
       return t.task.trim().toLowerCase() === taskNorm && tDate === todoDate;
@@ -163,7 +169,7 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
         todo.priority || 'medium',
         todo.done ? 1 : 0,
         todo.time || null,
-        todo.datetime || null,
+        todoDatetime,
         todo.date || null,
         todo.duration ?? 30,
         todo.location || null,
