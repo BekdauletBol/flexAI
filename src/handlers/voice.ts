@@ -1,4 +1,4 @@
-import { Context, InputFile } from 'grammy';
+import { Context, InputFile, InlineKeyboard } from 'grammy';
 import { config } from '../config.js';
 import { transcribeAudio } from '../services/whisper.js';
 import { analyzeTranscript } from '../services/analysis.js';
@@ -9,11 +9,13 @@ import { searchPlace, getWeatherForecast, getDirections, generateLocationAdvice 
 import { savePending, setUserFlowState, clearUserFlowState, getUserState, setUserState, clearUserState, UserState } from '../services/pendingStore.js';
 import { buildConflictMessage, buildCombinedConflictMessage, getConflictKeyboard, getCombinedConflictKeyboard, getSingleConflictKeyboard, getNavKeyboard } from '../services/messages.js';
 import { startDeliveryFlow } from '../services/delivery.js';
-import { detectIntent, askQuestion, chatReply, extractDeleteInfo, extractMemoryUpdate, quickIntentOverride } from '../services/intent.js';
+import { detectIntent, askQuestion, chatReply, extractDeleteInfo, extractMemoryUpdate, quickIntentOverride, detectTranscriptLanguage } from '../services/intent.js';
 import { getUserMemory, updateUserMemory } from '../services/memoryStore.js';
 import { generateReportPdf, generateMultiDateReportPdf } from '../services/pdf.js';
 import { TodoItem } from '../types/analysis.js';
 import { generateFullReport, generateWeeklyReport } from '../services/reporter.js';
+import { pendingImageTasks, ExtractedTask } from './image.js';
+import { groq, GROQ_MODEL, hasGroq } from '../services/groq.js';
 import fs from 'fs';
 import path from 'path';
 import https from 'https';
@@ -136,6 +138,169 @@ function formatViewPlans(plans: any[], lang: string): string {
   return lines.join('\n');
 }
 
+async function handleVoiceWithImageContext(
+  ctx: Context,
+  userId: number,
+  transcript: string,
+  lang: string,
+  imageTasks: ExtractedTask[],
+) {
+  const existingTasks = getUserTasks(userId).filter(t => !t.done);
+
+  const imageTasksText = imageTasks
+    .map(t => `- ${t.task}${t.time ? ' в ' + t.time : ''}${t.date ? ' ' + t.date : ''}`)
+    .join('\n');
+
+  const existingTasksText = existingTasks
+    .map(t => `- ${t.task}${t.time ? ' в ' + t.time : ''}${t.date ? ' ' + t.date : ''}`)
+    .join('\n');
+
+  const fallback = new (await import('openai')).OpenAI({
+    apiKey: config.openaiApiKey,
+    ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
+    timeout: 60000,
+    maxRetries: 1,
+  });
+
+  const llm = hasGroq ? groq : fallback;
+  const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
+
+  const response = await llm.chat.completions.create({
+    model: MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: `You are a personal secretary bot processing a screenshot + voice command.
+
+SCREENSHOT TASKS (extracted from image):
+${imageTasksText}
+
+USER'S EXISTING SCHEDULE:
+${existingTasksText || 'No existing tasks'}
+
+Analyze the user's voice command about the screenshot tasks.
+Current date/time: ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+
+Return ONLY this JSON with NO extra text:
+{
+  "action": "add_all | add_selected | check_conflicts | merge | custom",
+  "tasks_to_add": [list of tasks from screenshot to add, each with task, time, date, priority],
+  "conflicts": [{"task1": "name", "task2": "name", "time": "HH:MM", "date": "YYYY-MM-DD"}],
+  "message": "brief response in user's language",
+  "new_tasks": [any new tasks mentioned in voice, each with task, time{optional}, date{optional}, priority{optional}]
+}`,
+      },
+      { role: 'user', content: `Voice command: "${transcript}"` },
+    ],
+    max_tokens: 1024,
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+  });
+
+  const content = response.choices[0]?.message?.content || '{}';
+  let result: any;
+  try { result = JSON.parse(content); } catch { result = { action: 'add_all', message: 'Done.' }; }
+
+  switch (result.action) {
+    case 'add_all': {
+      const allTasks = [...imageTasks, ...(result.new_tasks || [])];
+      const allTodos: TodoItem[] = allTasks.map(t => ({
+        id: '',
+        task: t.task,
+        priority: (['high', 'medium', 'low'].includes(t.priority) ? t.priority : 'medium') as any,
+        done: false,
+        time: t.time || undefined,
+        date: t.date || undefined,
+        duration: t.duration_minutes || 30,
+      }));
+      const analysis = {
+        intent: 'action' as const,
+        title: `From screenshot + voice`,
+        summary: `Added ${allTodos.length} tasks from screenshot via voice.`,
+        key_points: [],
+        todos: allTodos,
+        tags: ['#screenshot'],
+        raw_transcript: transcript,
+        language: lang as 'ru' | 'en' | 'kk',
+        timeframe: 'day' as const,
+        needs_location_check: false,
+      };
+      if (ctx.chat) {
+        savePlan(ctx.chat.id, userId, analysis);
+        const timed = allTodos.filter(t => t.time);
+        if (timed.length > 0) scheduleReminders(ctx.chat.id, userId, allTodos, lang);
+      }
+      const taskList = allTodos.map(t => `— ${t.task}${t.time ? ' · ' + t.time : ''}`).join('\n');
+      const msg = lang === 'ru' ? `СОХРАНЕНО\n\n${taskList}\n\n${allTodos.length} задач добавлено.`
+        : lang === 'kk' ? `САҚТАЛДЫ\n\n${taskList}\n\n${allTodos.length} тапсырма қосылды.`
+        : `SAVED\n\n${taskList}\n\n${allTodos.length} tasks added.`;
+      await ctx.reply(msg, { reply_markup: getNavKeyboard(lang) });
+      break;
+    }
+
+    case 'check_conflicts': {
+      const conflicts = result.conflicts || [];
+      if (conflicts.length > 0) {
+        const conflictText = conflicts.map((c: any) => `⚠️ ${c.task1} ↔ ${c.task2} (${c.date || ''} ${c.time || ''})`).join('\n');
+        const msg = lang === 'ru' ? `КОНФЛИКТЫ\n\n${conflictText}\n\nЧто делаем?`
+          : lang === 'kk' ? `ҚАЙШЫЛЫҚТАР\n\n${conflictText}\n\nНе істейміз?`
+          : `CONFLICTS\n\n${conflictText}\n\nWhat now?`;
+        await ctx.reply(msg);
+      } else {
+        const msg = lang === 'ru' ? 'Конфликтов нет. Все задачи можно добавить.'
+          : lang === 'kk' ? 'Қайшылықтар жоқ. Барлық тапсырмаларды қосуға болады.'
+          : 'No conflicts. All tasks can be added.';
+        pendingImageTasks.set(userId, { tasks: imageTasks, source: '', expiresAt: Date.now() + 60000 });
+        const keyboard = new InlineKeyboard().text(
+          lang === 'ru' ? 'Добавить всё' : lang === 'kk' ? 'Бәрін қосу' : 'Add all',
+          `img_add_all_${userId}`
+        );
+        await ctx.reply(msg, { reply_markup: keyboard });
+      }
+      break;
+    }
+
+    case 'merge': {
+      const allTasks = [...imageTasks, ...(result.new_tasks || [])];
+      const allTodos: TodoItem[] = allTasks.map(t => ({
+        id: '',
+        task: t.task,
+        priority: (['high', 'medium', 'low'].includes(t.priority) ? t.priority : 'medium') as any,
+        done: false,
+        time: t.time || undefined,
+        date: t.date || undefined,
+        duration: t.duration_minutes || 30,
+      }));
+      const analysis = {
+        intent: 'action' as const,
+        title: `Merged screenshot + voice`,
+        summary: `Merged ${allTodos.length} tasks.`,
+        key_points: [],
+        todos: allTodos,
+        tags: ['#screenshot'],
+        raw_transcript: transcript,
+        language: lang as 'ru' | 'en' | 'kk',
+        timeframe: 'day' as const,
+        needs_location_check: false,
+      };
+      if (ctx.chat) {
+        savePlan(ctx.chat.id, userId, analysis);
+        const timed = allTodos.filter(t => t.time);
+        if (timed.length > 0) scheduleReminders(ctx.chat.id, userId, allTodos, lang);
+      }
+      const taskList = allTodos.map((t: any) => `— ${t.task}`).join('\n');
+      const msg = lang === 'ru' ? `ОБЪЕДИНЕНО\n\n${taskList}\n\n${allTodos.length} задач сохранено.`
+        : lang === 'kk' ? `БІРІКТІРІЛДІ\n\n${taskList}\n\n${allTodos.length} тапсырма сақталды.`
+        : `MERGED\n\n${taskList}\n\n${allTodos.length} tasks saved.`;
+      await ctx.reply(msg, { reply_markup: getNavKeyboard(lang) });
+      break;
+    }
+
+    default:
+      await ctx.reply(result.message || 'Done.', { reply_markup: getNavKeyboard(lang) });
+  }
+}
+
 export async function handleVoice(ctx: Context) {
   const userId = ctx.from?.id;
   const username = ctx.from?.username || ctx.from?.first_name || '?';
@@ -161,7 +326,25 @@ export async function handleVoice(ctx: Context) {
       await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, 'Could not recognize speech.');
       return;
     }
-    const lang = getUserConfig(userId).language || 'en';
+    const configuredLang = getUserConfig(userId).language;
+    const detectedLang = detectTranscriptLanguage(transcript);
+    // Priority: explicit /language choice, then dominant spoken language, then English
+    const lang = configuredLang || detectedLang || 'en';
+    console.log('[Voice] Language:', { configured: configuredLang, detected: detectedLang, used: lang });
+
+    // Clean up expired pending image data
+    for (const [uid, data] of pendingImageTasks) {
+      if (data.expiresAt < Date.now()) pendingImageTasks.delete(uid);
+    }
+
+    // Check for pending image tasks — route to voice-with-image flow
+    const pendingImage = pendingImageTasks.get(userId);
+    if (pendingImage) {
+      try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
+      await handleVoiceWithImageContext(ctx, userId, transcript, lang, pendingImage.tasks);
+      pendingImageTasks.delete(userId);
+      return;
+    }
 
     const state = getUserState(userId);
     if (state?.flow) {

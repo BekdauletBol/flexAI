@@ -3,7 +3,7 @@ import path from 'path';
 import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config.js';
 import { handleVoice, handlePlanIntent, handleQuestionIntent, routeByIntent, continueFlow } from './handlers/voice.js';
-import { handleImage } from './handlers/image.js';
+import { handleImage, pendingImageTasks } from './handlers/image.js';
 import { initScheduler } from './services/scheduler.js';
 import { createServer, resetStartTime } from './server.js';
 import { setUserLanguage, getUserConfig, setUserLocation, setReminderOffset } from './services/userConfig.js';
@@ -936,56 +936,66 @@ bot.callbackQuery(/^snz_(\d+|tmrw|done)_(.+)$/, async (ctx) => {
 
 // ─── Image Confirmation Callbacks ──────────────────────────────────────────────
 
-bot.callbackQuery(/^img_confirm_(.+)$/, async (ctx) => {
-  const pendingId = ctx.match[1];
-  const { getPending, deletePending } = await import('./services/pendingStore.js');
-  const pending = getPending(pendingId);
-  if (!pending) {
-    await ctx.answerCallbackQuery('Expired.');
+bot.callbackQuery(/^img_add_all_(\d+)$/, async (ctx) => {
+  const userId = parseInt(ctx.match[1], 10);
+  const data = pendingImageTasks.get(userId);
+
+  if (!data) {
+    await ctx.answerCallbackQuery('Session expired. Send the screenshot again.');
     return;
   }
+
   await ctx.answerCallbackQuery();
 
-  const lang = pending.analysis.language;
+  const { tasks } = data;
+    const todos = tasks.map(t => ({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    task: t.task,
+    priority: (['high', 'medium', 'low'].includes(t.priority) ? t.priority : 'medium') as any,
+    done: false,
+    time: t.time || undefined,
+    date: t.date || undefined,
+    duration: t.duration_minutes || 30,
+    location: undefined,
+  }));
+
+  const analysis = {
+    intent: 'action' as const,
+    title: `From image`,
+    summary: `Added ${todos.length} tasks from screenshot.`,
+    key_points: [],
+    todos,
+    tags: ['#screenshot'],
+    raw_transcript: '[from image confirm]',
+    language: 'ru' as 'ru' | 'en' | 'kk',
+    timeframe: 'day' as const,
+    needs_location_check: false,
+  };
+
   if (ctx.chat) {
-    savePlan(ctx.chat.id, pending.userId, pending.analysis);
-    const timedTasks = pending.analysis.todos.filter(t => t.time);
-    if (timedTasks.length > 0) {
-      scheduleReminders(ctx.chat.id, pending.userId, pending.analysis.todos, lang);
-    }
+    savePlan(ctx.chat.id, userId, analysis);
+    const timed = todos.filter(t => t.time);
+    if (timed.length > 0) scheduleReminders(ctx.chat.id, userId, todos, 'ru');
   }
 
-  if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
-  }
+  pendingImageTasks.delete(userId);
 
-  await startDeliveryFlow(ctx, pending);
+  const taskList = tasks.map(t => `— ${t.task}${t.time ? ' · ' + t.time : ''}`).join('\n');
+  await ctx.editMessageText(`СОХРАНЕНО\n\n${taskList}\n\n${todos.length} задач добавлено.`);
 });
 
-bot.callbackQuery(/^img_cancel_(.+)$/, async (ctx) => {
-  const pendingId = ctx.match[1];
-  const { getPending, deletePending } = await import('./services/pendingStore.js');
-  const pending = getPending(pendingId);
-  if (!pending) {
-    await ctx.answerCallbackQuery('Expired.');
-    return;
-  }
+bot.callbackQuery(/^img_cancel_(\d+)$/, async (ctx) => {
+  const userId = parseInt(ctx.match[1], 10);
+  pendingImageTasks.delete(userId);
   await ctx.answerCallbackQuery();
-
-  const lang = pending.analysis.language;
-  const msg = lang === 'ru' ? 'Отменено.' : lang === 'kk' ? 'Болдырылмады.' : 'Cancelled.';
-
-  if (ctx.callbackQuery.message) {
-    try { await ctx.api.deleteMessage(ctx.chat!.id, ctx.callbackQuery.message.message_id); } catch { }
-  }
-  await ctx.reply(msg);
+  await ctx.editMessageText('Отменено.');
 });
 
 // ─── Message handlers ─────────────────────────────────────────────────────────
 
 bot.on('message:voice', async (ctx) => {
   const userId = ctx.from?.id ?? 0;
-  await ctx.reply('Processing ⏳');
+  await ctx.reply('Processing');
   await voiceQueue.add(async () => {
     const start = Date.now();
     try {

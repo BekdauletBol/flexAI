@@ -1,0 +1,37 @@
+# Fly.io deployment configuration for flexAI
+# Replace 'flexai-bot' below with your actual Fly.io app name, then run: fly deploy
+
+app = 'flexai'
+primary_region = 'lhr'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+# Explicit startup command — overrides any broken command set in the Fly dashboard.
+cmd = 'node dist/index.js'
+
+[env]
+  PORT = '8080'
+  NODE_ENV = 'production'
+  # Fly mounts persistent storage at /data, so keep the SQLite DB there.
+  FLEXAI_DB_PATH = '/data/flexai.db'
+  LOG_LEVEL = 'info'
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 512
+
+# Persistent storage for the SQLite database.
+# This must match an existing Fly volume attached to the app.
+[[mounts]]
+  source = 'data'
+  destination = '/data'
