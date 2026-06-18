@@ -2,11 +2,19 @@ import { logger } from '../logger.js';
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { DateTime } from 'luxon';
 import { kzLocalToUTC } from '../utils/timezone.js';
 
 const DB_PATH = process.env.FLEXAI_DB_PATH
   ? path.resolve(process.env.FLEXAI_DB_PATH)
   : path.resolve(process.cwd(), 'data', 'flexai.db');
+
+// Ensure directory exists to prevent better-sqlite3 from crashing
+const dbDir = path.dirname(DB_PATH);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
 const db = new Database(DB_PATH);
 
 // Enable WAL for better concurrent performance
@@ -59,6 +67,17 @@ try { db.exec('ALTER TABLE todos ADD COLUMN completed_at TEXT'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN snoozed_until TEXT'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN plan_history_id INTEGER REFERENCES plan_history(id)'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN source TEXT'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN scheduled_time_kz TEXT'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN is_reminder INTEGER DEFAULT 0'); } catch {}
+
+// Backfill scheduled_time_kz from date + time for existing rows
+try {
+  db.exec(`
+    UPDATE todos
+    SET scheduled_time_kz = date || 'T' || COALESCE(time, '00:00')
+    WHERE scheduled_time_kz IS NULL AND date IS NOT NULL
+  `);
+} catch {}
 
 // Plan history table for accumulated plans (multiple per user)
 db.exec(`
@@ -113,6 +132,10 @@ const stmtUpsertPlan = db.prepare(`
 // Prepared statements — todos
 const stmtInsertTodo = db.prepare(`
   INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, plan_history_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const stmtInsertReminder = db.prepare(`
+  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, is_reminder)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtGetTodosByChat = db.prepare('SELECT * FROM todos WHERE chat_id = ?');
@@ -332,6 +355,88 @@ export function rescheduleTask(chatId: number, taskId: string, newTime: string, 
   stmtUpdateTodoTime.run(newTime, newDatetime || null, newDate || null, taskId, chatId);
 }
 
+export function insertReminder(
+  userId: number,
+  chatId: number,
+  task: string,
+  scheduledAtUtc: string,
+): string {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+  // Ensure a plan exists for FK constraint
+  db.prepare(`
+    INSERT OR IGNORE INTO plans (chat_id, user_id, title, summary, key_points, tags, language, created_at)
+    VALUES (?, ?, '', '', '[]', '[]', 'ru', datetime('now'))
+  `).run(chatId, userId);
+
+  stmtInsertReminder.run(
+    id, chatId, userId, task, 'medium', 0,
+    null, // time (not used for free reminders)
+    scheduledAtUtc, // datetime (UTC ISO)
+    scheduledAtUtc.substring(0, 10), // date
+    0, // duration
+    null, // location
+    'voice', // source
+    1, // is_reminder
+  );
+  return id;
+}
+
+export function checkReminderConflicts(
+  userId: number,
+  reminderTimeUtc: string,
+  windowMinutes: number = 15,
+): any[] {
+  // Query for non-reminder tasks within ±windowMinutes of the reminder time
+  const rows = db.prepare(`
+    SELECT id, task, datetime, time, date, scheduled_time_kz
+    FROM todos
+    WHERE user_id = ?
+      AND is_reminder = 0
+      AND done = 0
+      AND datetime IS NOT NULL
+      AND datetime BETWEEN datetime(?, '-' || ? || ' minutes') AND datetime(?, '+' || ? || ' minutes')
+  `).all(userId, reminderTimeUtc, windowMinutes, reminderTimeUtc, windowMinutes) as any[];
+  return rows;
+}
+
+export function getActiveReminders(userId: number): any[] {
+  return db.prepare(`
+    SELECT id, task, datetime, scheduled_time_kz
+    FROM todos
+    WHERE user_id = ? AND is_reminder = 1 AND done = 0
+    AND datetime > datetime('now')
+    ORDER BY datetime ASC
+  `).all(userId) as any[];
+}
+
+export function deleteReminderById(userId: number, taskId: string): boolean {
+  const result = db.prepare(
+    'DELETE FROM todos WHERE id = ? AND user_id = ? AND is_reminder = 1'
+  ).run(taskId, userId);
+  return result.changes > 0;
+}
+
+export function getTodayReminderCount(userId: number): number {
+  const row = db.prepare(`
+    SELECT COUNT(*) as c FROM todos
+    WHERE user_id = ? AND is_reminder = 1
+    AND DATE(datetime) = DATE('now')
+  `).get(userId) as { c: number };
+  return row.c;
+}
+
+export function findReminderByTask(userId: number, taskQuery: string): any | null {
+  const rows = db.prepare(`
+    SELECT id, task, datetime, scheduled_time_kz
+    FROM todos
+    WHERE user_id = ? AND is_reminder = 1 AND done = 0
+    AND task LIKE '%' || ? || '%'
+    ORDER BY datetime ASC
+  `).all(userId, taskQuery) as any[];
+  return rows.length > 0 ? rows[0] : null;
+}
+
 export function getUserTasks(userId: number) {
   const rows = stmtGetTodosByUser.all(userId) as any[];
   return rows.map((t: any) => ({
@@ -355,9 +460,9 @@ function getTimeMinutes(todo: any): number | null {
     }
   }
   if (todo.datetime) {
-    const d = new Date(todo.datetime);
-    if (!isNaN(d.getTime())) {
-      return d.getHours() * 60 + d.getMinutes();
+    const dt = DateTime.fromISO(todo.datetime, { zone: 'utc' }).setZone('Asia/Almaty');
+    if (dt.isValid) {
+      return dt.hour * 60 + dt.minute;
     }
   }
   return null;
@@ -384,7 +489,7 @@ export function findTaskByDescription(chatId: number, description: string): any 
 
 export function getCompletedTasksToday(userId: number): any[] {
   const rows = stmtGetTodosByUser.all(userId) as any[];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = DateTime.now().setZone('Asia/Almaty').toFormat('yyyy-MM-dd');
   return rows.filter(t => t.done && t.completed_at && t.completed_at.startsWith(today));
 }
 

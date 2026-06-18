@@ -6,13 +6,21 @@
     "important_dates": [],
     "patterns": {
       "sleep_time": "22:00",
-      "wake_up_time": "05:30",
-      "work_time": "05:00-10:00",
-      "lunch_time": "13:00-14:00",
-      "dinner_time": "16:00-17:00",
-      "bed_time": "22:00"
+      "wake_up_time": "08:00",
+      "work_time": "11:20-16:00",
+      "lunch_time": "16:00-17:00",
+      "dinner_time": "10:00-11:00",
+      "bed_time": "22:00",
+      "breakfast_time": "10:00-11:00",
+      "gym_time": "08:00-10:00"
     },
-    "places": [],
-    "last_updated": "2026-06-17T13:28:09.900Z"
+    "places": [
+      "бар",
+      "дом",
+      "работа",
+      "спортзал",
+      "ресторан"
+    ],
+    "last_updated": "2026-06-18T04:21:49.314Z"
   }
 }

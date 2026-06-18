@@ -8,6 +8,7 @@ import {
   handleQuestionIntent,
   routeByIntent,
   continueFlow,
+  routeImageFollowup,
 } from "./handlers/voice.js";
 import { handleImage, pendingImageTasks, mapSourceAppToTaskSource } from "./handlers/image.js";
 import { initScheduler } from "./services/scheduler.js";
@@ -25,6 +26,9 @@ import {
   savePlan,
   deleteAllUserPlans,
   updateTaskDateTime,
+  getKzToday,
+  getTasksFiltered,
+  prepareReportTasks,
 } from "./services/planStore.js";
 import {
   generateFullReport,
@@ -55,6 +59,9 @@ import {
   getRescheduleState,
   clearRescheduleState,
   getUserState,
+  isAwaitingVoiceFollowup,
+  clearAwaitingVoiceFollowup,
+  clearAwaitingImageFollowup,
 } from "./services/pendingStore.js";
 import { startDeliveryFlow, advanceReminderLoop } from "./services/delivery.js";
 import {
@@ -309,12 +316,25 @@ bot.callbackQuery(/lang_(ru|en|kk)/, async (ctx) => {
 
 bot.command("report", async (ctx) => {
   const userId = ctx.from?.id;
-  if (!userId) return;
+  if (!userId || !ctx.chat) return;
+
+  if (isAwaitingVoiceFollowup(ctx.chat.id)) {
+    const lang = getLang(userId);
+    await ctx.reply(
+      lang === "ru"
+        ? "Жду голосовое сообщение после скриншота."
+        : lang === "kk"
+          ? "Скриншоттан кейін дауыстық хабарлама күтемін."
+          : "Waiting for a voice message after the screenshot.",
+    );
+    return;
+  }
 
   const lang = getLang(userId);
-  const tasks = getUserTasks(userId);
+  const rawTasks = getTasksFiltered(userId, { date: getKzToday(), includeDone: true });
+  const { tasks, overdue } = prepareReportTasks(rawTasks, getKzToday());
 
-  if (tasks.length === 0) {
+  if (tasks.length === 0 && overdue.length === 0) {
     await ctx.reply(i18n[lang].no_tasks);
     return;
   }
@@ -322,7 +342,20 @@ bot.command("report", async (ctx) => {
   const statusMsg = await ctx.reply(i18n[lang].wait_report);
 
   try {
-    const pdfBuf = await generateReportPdf(tasks, lang);
+    const summary =
+      overdue.length > 0
+        ? (lang === "ru"
+            ? `ПРОСРОЧЕНО:\n${overdue.map((t) => `— ${t.task}`).join("\n")}\n\n`
+            : lang === "kk"
+              ? `МЕРЗІМІ ӨТКЕН:\n${overdue.map((t) => `— ${t.task}`).join("\n")}\n\n`
+              : `OVERDUE:\n${overdue.map((t) => `— ${t.task}`).join("\n")}\n\n`) +
+          (lang === "ru"
+            ? `Всего: ${tasks.length}`
+            : lang === "kk"
+              ? `Барлығы: ${tasks.length}`
+              : `Total: ${tasks.length}`)
+        : undefined;
+    const pdfBuf = await generateReportPdf(tasks, lang, summary ? { summary } : undefined);
     try {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
     } catch {}
@@ -332,12 +365,13 @@ bot.command("report", async (ctx) => {
       caption: "Report",
       reply_markup: getNavKeyboard(lang),
     });
-  } catch (err) {
-    console.error("[Bot] Report generation failed:", err);
-    const report = await generateFullReport(tasks, lang);
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, {
-      reply_markup: getNavKeyboard(lang),
-    });
+  } catch (err: any) {
+    console.error("[PDF] Generation failed:", err.message, err.stack);
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `[PDF] ${err.message}`, {
+        reply_markup: getNavKeyboard(lang),
+      });
+    } catch {}
   }
 });
 
@@ -367,12 +401,13 @@ bot.command("weekly", async (ctx) => {
       caption: "Weekly Report",
       reply_markup: getNavKeyboard(lang),
     });
-  } catch (err) {
-    console.error("[Bot] Weekly PDF failed:", err);
-    const report = generateWeeklyReport(plans, lang);
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, {
-      reply_markup: getNavKeyboard(lang),
-    });
+  } catch (err: any) {
+    console.error("[PDF] Generation failed:", err.message, err.stack);
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `[PDF] ${err.message}`, {
+        reply_markup: getNavKeyboard(lang),
+      });
+    } catch {}
   }
 });
 
@@ -392,6 +427,71 @@ bot.command("clear", async (ctx) => {
       reply_markup: getNavKeyboard(lang),
     });
   }
+});
+
+bot.command("reminders", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId || !ctx.chat) return;
+
+  const lang = getLang(userId);
+  const { getActiveReminders } = await import("./services/db.js");
+  const reminders = getActiveReminders(userId);
+
+  if (reminders.length === 0) {
+    await ctx.reply(
+      lang === "ru" ? "Активных напоминаний нет."
+        : lang === "kk" ? "Белсенді еске салулар жоқ."
+          : "No active reminders.",
+      { reply_markup: getNavKeyboard(lang) },
+    );
+    return;
+  }
+
+  const lines: string[] = [];
+  const keyboard = new InlineKeyboard();
+
+  for (const r of reminders) {
+    const dt = r.scheduled_time_kz || r.datetime || '';
+    let timeLabel = '';
+    if (dt) {
+      try {
+        const { DateTime } = await import("luxon");
+        const d = DateTime.fromISO(dt.includes('T') ? dt : dt + 'T00:00', { zone: dt.includes('Z') ? 'utc' : 'Asia/Almaty' });
+        timeLabel = d.setZone('Asia/Almaty').toFormat('HH:mm');
+      } catch {
+        timeLabel = String(dt).slice(11, 16) || '??:??';
+      }
+    }
+    lines.push(`🔔 Напомню о «${r.task}» в ${timeLabel}`);
+    keyboard.text(`Отменить ❌`, `cancel_reminder_${r.id}`).row();
+  }
+
+  await ctx.reply(lines.join('\n'), {
+    reply_markup: keyboard,
+  });
+});
+
+bot.callbackQuery(/^cancel_reminder_(.+)$/, async (ctx) => {
+  const taskId = ctx.match[1];
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  const { deleteReminderById } = await import("./services/db.js");
+  const deleted = deleteReminderById(userId, taskId);
+
+  // Also remove from in-memory scheduler
+  if (deleted) {
+    const { cancelReminderByTaskId } = await import("./services/scheduler.js");
+    cancelReminderByTaskId(taskId);
+  }
+
+  await ctx.answerCallbackQuery();
+  const lang = getLang(userId);
+  await ctx.editMessageText(
+    deleted
+      ? (lang === "ru" ? "Напоминание удалено." : lang === "kk" ? "Еске салу өшірілді." : "Reminder deleted.")
+      : (lang === "ru" ? "Не удалось удалить." : lang === "kk" ? "Өшіру мүмкін болмады." : "Failed to delete."),
+  );
 });
 
 bot.command("stats", async (ctx) => {
@@ -470,13 +570,26 @@ bot.callbackQuery("nav_report", async (ctx) => {
   await ctx.answerCallbackQuery();
   const userId = ctx.from.id;
   const lang = getLang(userId);
-  const tasks = getUserTasks(userId);
-  if (tasks.length === 0) {
+  if (ctx.chat && isAwaitingVoiceFollowup(ctx.chat.id)) {
+    await ctx.reply(
+      lang === "ru"
+        ? "Жду голосовое сообщение после скриншота."
+        : "Waiting for a voice message after the screenshot.",
+    );
+    return;
+  }
+  const rawTasks = getTasksFiltered(userId, { date: getKzToday(), includeDone: true });
+  const { tasks, overdue } = prepareReportTasks(rawTasks, getKzToday());
+  if (tasks.length === 0 && overdue.length === 0) {
     await ctx.reply(i18n[lang].no_tasks);
     return;
   }
   try {
-    const pdfBuf = await generateReportPdf(tasks, lang);
+    const summary =
+      overdue.length > 0
+        ? `OVERDUE:\n${overdue.map((t) => `— ${t.task}`).join("\n")}`
+        : undefined;
+    const pdfBuf = await generateReportPdf(tasks, lang, summary ? { summary } : undefined);
     const fn = `report_${userId}_${Date.now()}.pdf`;
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), {
       caption: "Report",
@@ -1314,6 +1427,8 @@ bot.callbackQuery(/^img_add_all_(\d+)$/, async (ctx) => {
   }
 
   pendingImageTasks.delete(userId);
+  if (ctx.chat) clearAwaitingVoiceFollowup(ctx.chat.id);
+  clearAwaitingImageFollowup(userId);
 
   const taskList = tasks
     .map((t) => `— ${t.task}${t.time ? " · " + t.time : ""}`)
@@ -1326,6 +1441,8 @@ bot.callbackQuery(/^img_add_all_(\d+)$/, async (ctx) => {
 bot.callbackQuery(/^img_cancel_(\d+)$/, async (ctx) => {
   const userId = parseInt(ctx.match[1], 10);
   pendingImageTasks.delete(userId);
+  if (ctx.chat) clearAwaitingVoiceFollowup(ctx.chat.id);
+  clearAwaitingImageFollowup(userId);
   await ctx.answerCallbackQuery();
   await ctx.editMessageText("Отменено.");
 });
@@ -1598,6 +1715,8 @@ async function saveSelectedImageTasks(
   }
 
   pendingImageTasks.delete(userId);
+  if (ctx.chat) clearAwaitingVoiceFollowup(ctx.chat.id);
+  clearAwaitingImageFollowup(userId);
 
   const addedCount = todos.length;
   const skippedCount = data.tasks.length - tasksToSave.length;
@@ -1666,6 +1785,14 @@ bot.on("message:audio", async (ctx) => {
 bot.on("message:text", async (ctx) => {
   if (ctx.message.text.startsWith("/")) return;
   const userId = ctx.from?.id ?? 0;
+  const chatId = ctx.chat?.id;
+
+  // Awaiting screenshot follow-up — route text as instruction, never send cached report
+  if (chatId && isAwaitingVoiceFollowup(chatId)) {
+    const lang = getLang(userId);
+    const handled = await routeImageFollowup(ctx, userId, ctx.message.text, lang, chatId);
+    if (handled) return;
+  }
 
   const flow = getUserFlowState(userId);
 
@@ -1866,7 +1993,7 @@ bot.on("message:text", async (ctx) => {
   const lang = getLang(userId);
   const statusMsgId = (await ctx.reply("Analyzing...")).message_id;
   try {
-    const intentResult = await detectIntent(text);
+    const intentResult = await detectIntent(text, userId);
     await routeByIntent(
       intentResult,
       ctx,

@@ -1,7 +1,8 @@
 import { Context } from 'grammy';
+import { InputFile } from 'grammy';
 import { logger } from '../logger.js';
 import { analyzeTranscript } from './analysis.js';
-import { savePlan, detectTimeConflicts, completeTask, rescheduleTask, getPlan } from './planStore.js';
+import { savePlan, detectTimeConflicts, completeTask, rescheduleTask, getPlan, getKzToday, getTasksFiltered, prepareReportTasks } from './planStore.js';
 import { findTaskByDescription, getCompletedTasksToday } from './db.js';
 import { getUserConfig } from './userConfig.js';
 import { savePending } from './pendingStore.js';
@@ -9,9 +10,19 @@ import { startDeliveryFlow } from './delivery.js';
 import { buildConflictMessage, getConflictKeyboard, getNavKeyboard } from './messages.js';
 import { scheduleReminders } from './scheduler.js';
 import { AnalysisResult } from '../types/analysis.js';
+import { generateDailyReportPdf } from './report.js';
 
-function classifyIntentFast(text: string): { intent: 'complete' | 'reschedule' | 'what_done' | 'unknown'; taskDescription?: string; newTime?: string; newDate?: string } | null {
+function classifyIntentFast(text: string): { intent: 'complete' | 'reschedule' | 'what_done' | 'report' | 'unknown'; taskDescription?: string; newTime?: string; newDate?: string } | null {
   const lower = text.toLowerCase().trim();
+
+  // === REPORT (fast path — no LLM needed) ===
+  const reportPatterns = [
+    /(?:отчёт|отчет|репорт|скинь\s+(?:задачи|план|отчёт|отчет|пдф|pdf)|покажи\s+(?:задачи|план|отчёт|отчет)|в\s+формате\s+(?:pdf|пдф)|send\s+(?:report|pdf)|show\s+(?:report|tasks|plan)|what'?s?\s+(?:on|planned))/i,
+    /(?:есеп|есеп\s+бер|тапсырмаларды\s+көрсет|pdf\s+жібер|құжатты\s+жібер)/i,
+  ];
+  if (reportPatterns.some(p => p.test(lower))) {
+    return { intent: 'report' };
+  }
 
   // === COMPLETE ===
   if (/^(?:i (?:just )?(?:finished|completed|done|did)|i['\u2019]?ve (?:just )?(?:finished|completed|done))/.test(lower)) {
@@ -130,6 +141,33 @@ export async function handleTextMessage(ctx: Context, text: string) {
         return;
       }
 
+      case 'report': {
+        // Direct PDF generation from SQLite — no LLM needed
+        const userLang = getUserConfig(userId).language || 'ru';
+        const today = getKzToday();
+        const waitMsg = await ctx.reply(
+          userLang === 'ru' ? 'Генерирую отчёт...'
+          : userLang === 'kk' ? 'Есеп жасалуда...'
+          : 'Generating report...',
+        );
+        try {
+          const pdfBuf = await generateDailyReportPdf(userId, today, userLang);
+          try { await ctx.api.deleteMessage(chatId, waitMsg.message_id); } catch {}
+          await ctx.replyWithDocument(
+            new InputFile(pdfBuf, `report_${today}_${Date.now()}.pdf`),
+            { caption: 'Report', reply_markup: getNavKeyboard(userLang) },
+          );
+        } catch (err: any) {
+          console.error('[PDF] Generation failed:', err.message, err.stack);
+          try {
+            await ctx.api.editMessageText(chatId, waitMsg.message_id,
+              `[PDF] ${err.message}`,
+            );
+          } catch {}
+        }
+        return;
+      }
+
       case 'unknown': {
         await ctx.reply(lang === 'ru' ? 'Отправьте голосовое сообщение.' : 'Send a voice message.');
         return;
@@ -141,7 +179,7 @@ export async function handleTextMessage(ctx: Context, text: string) {
   const statusMsg = await ctx.reply('Analyzing...');
   let analysis: AnalysisResult;
   try {
-    analysis = await analyzeTranscript(text);
+    analysis = await analyzeTranscript(text, ctx.from?.id);
   } catch (e) {
     logger.error(e, '[TextRouter] Analysis failed');
     await ctx.api.editMessageText(chatId, statusMsg.message_id, 'Analysis failed.');

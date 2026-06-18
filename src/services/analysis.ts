@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { config } from '../config.js';
 import { AnalysisResult } from '../types/analysis.js';
 import { v4 as uuid } from 'uuid';
+import { getTemporalContext } from './userConfig.js';
 
 const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
@@ -39,6 +40,21 @@ function safeJsonParse(content: string): any | null {
   }
 }
 
+/**
+ * Calculate a future date from a YYYY-MM-DD base date.
+ * @param baseDate - "YYYY-MM-DD" in user's local timezone
+ * @param daysOffset - number of days to add
+ * @returns "YYYY-MM-DD" string
+ */
+function getNextDate(baseDate: string, daysOffset: number): string {
+  const [y, m, d] = baseDate.split('-').map(Number);
+  const date = new Date(y, m - 1, d + daysOffset);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timeoutId: NodeJS.Timeout;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -64,6 +80,13 @@ PRESERVE FOREIGN TERMS (critical):
 - Examples: "CJM customer journey map", "UX review", "API integration", "Zoom call", "Notion", "Figma", "MVP", "KPI".
 - Do NOT translate these into Russian or Kazakh. Write them verbatim in the task description.
 - If the user says "сделать CJM customer journey map", the task must be "Сделать CJM customer journey map".
+
+TIMEZONE RULE (critical):
+- You will receive the user's LOCAL time and timezone in the CONTEXT section below.
+- ALL times the user mentions ("в 12:00", "at 3pm", "сағат 15:00") are in their LOCAL time.
+- When extracting dates/times, use the LOCAL time provided. Do NOT convert or shift.
+- Store dates as "YYYY-MM-DD" and times as "HH:MM" in the user's local timezone.
+- "tomorrow" means the next calendar day in the user's LOCAL timezone.
 
 Return ONLY a JSON object in this EXACT format:
 {
@@ -101,8 +124,10 @@ TIME EXTRACTION:
 - "datetime": ISO datetime "YYYY-MM-DDTHH:MM:00" combining the task's "date" and "time". Set null if no time is given.
 
 DATE EXTRACTION:
-- If the user mentions a date, extract as "date" in "YYYY-MM-DD" format using the current date context below.
-- "today" → today's date, "tomorrow" → tomorrow's date, "next Friday" → resolve to absolute ISO string.
+- Use the LOCAL DATE from the CONTEXT section as "today".
+- "today" → the LOCAL DATE from context
+- "tomorrow" → next calendar day after the LOCAL DATE
+- "next Friday" → resolve to absolute ISO string based on the LOCAL DATE
 - If no date mentioned → set "date" to null.
 
 PRIORITY RULES (apply strictly):
@@ -131,14 +156,34 @@ Guidelines:
 - Return ONLY JSON.
 IMPORTANT: Extract ALL tasks mentioned, no matter how many. Do not stop early. If the user mentions 10 tasks, return all 10 in the todos array.`;
 
-export async function analyzeTranscript(transcript: string): Promise<AnalysisResult> {
+export async function analyzeTranscript(transcript: string, userId?: number): Promise<AnalysisResult> {
   try {
-    const now = new Date();
-    const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const timeStr = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-    const contextPrompt = `\n\nCURRENT CONTEXT:\n- Today is ${dateStr}\n- Current time is ${timeStr}\n\nUse this context to resolve relative dates like "tomorrow", "next Friday", etc. into absolute ISO strings.`;
+    // Get user-specific temporal context (timezone-aware)
+    const temporal = getTemporalContext(userId || 0);
 
-    console.log(`[Analysis] Analyzing (${transcript.length} chars)...`);
+    // Build context prompt with user's LOCAL time, not server time
+    const localDateObj = new Date(temporal.localISO);
+    const dayOfWeek = localDateObj.toLocaleDateString('en-US', { weekday: 'long' });
+    const monthDay = localDateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+    const year = localDateObj.getFullYear();
+
+    const contextPrompt = `
+CURRENT CONTEXT (critical — use this for ALL date/time calculations):
+- User's timezone: ${temporal.timezone}
+- Today is ${dayOfWeek}, ${monthDay}, ${year}
+- Current local time: ${temporal.localTime}
+- Today's date (YYYY-MM-DD): ${temporal.localDate}
+- Current UTC time: ${temporal.utcISO}
+
+RESOLUTION RULES:
+- "today" → ${temporal.localDate}
+- "tomorrow" → ${getNextDate(temporal.localDate, 1)}
+- "послезавтра" → ${getNextDate(temporal.localDate, 2)}
+- "next [weekday]" → calculate from ${temporal.localDate}
+- All times the user says are in ${temporal.timezone} (${temporal.localTime} is NOW)
+- NEVER use server/UTC time for user-facing dates. Always use the user's local date above.`;
+
+    console.log(`[Analysis] Analyzing (${transcript.length} chars) for user ${userId || 'unknown'} [tz=${temporal.timezone}]...`);
 
     const response = await withTimeout(analysisLlm.chat.completions.create({
       model: ANALYSIS_MODEL,

@@ -22,7 +22,8 @@ export type UserFlowState =
   | { type: 'awaiting_reschedule'; pendingId: string; conflictIndex?: number; customField?: 'date' | 'time' }
   | { type: 'awaiting_custom_reminder'; pendingId: string; taskIndex: number }
   | { type: 'awaiting_clarification'; transcript: string; chatId: number; statusMsgId: number }
-  | { type: 'awaiting_image_followup'; chatId: number; imageData: any; expiresAt: number };
+  | { type: 'awaiting_image_followup'; chatId: number; imageData: any; expiresAt: number }
+  | { type: 'awaiting_reminder_conflict_confirm'; userId: number; taskName: string; reminderMinutes: number; scheduledAtUtc: string; conflicts: any[] };
 
 const userFlows = new Map<number, UserFlowState>();
 
@@ -95,23 +96,56 @@ export function clearUserFlowState(userId: number) {
   userFlows.delete(userId);
 }
 
+export interface AwaitingVoiceState {
+  chatId: number;
+  userId: number;
+  imageData: any;
+  expiresAt: number;
+}
+
+// Keyed by chat_id — blocks report/cached responses until follow-up voice/text arrives
+const chatAwaitingVoice = new Map<number, AwaitingVoiceState>();
+
 export function setAwaitingImageFollowup(userId: number, chatId: number, imageData: any) {
+  const expiresAt = Date.now() + 10 * 60 * 1000;
   userFlows.set(userId, {
     type: 'awaiting_image_followup',
     chatId,
     imageData,
-    expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+    expiresAt,
   });
+  chatAwaitingVoice.set(chatId, { chatId, userId, imageData, expiresAt });
 }
 
-export function getAwaitingImageFollowup(userId: number): { imageData: any } | undefined {
+export function isAwaitingVoiceFollowup(chatId: number): boolean {
+  const state = chatAwaitingVoice.get(chatId);
+  if (!state) return false;
+  if (Date.now() > state.expiresAt) {
+    chatAwaitingVoice.delete(chatId);
+    return false;
+  }
+  return true;
+}
+
+export function getAwaitingVoiceFollowup(chatId: number): AwaitingVoiceState | undefined {
+  const state = chatAwaitingVoice.get(chatId);
+  if (!state) return undefined;
+  if (Date.now() > state.expiresAt) {
+    chatAwaitingVoice.delete(chatId);
+    return undefined;
+  }
+  return state;
+}
+
+export function getAwaitingImageFollowup(userId: number): { imageData: any; chatId?: number } | undefined {
   const state = userFlows.get(userId);
   if (state && state.type === 'awaiting_image_followup') {
     if (Date.now() > state.expiresAt) {
       userFlows.delete(userId);
+      chatAwaitingVoice.delete(state.chatId);
       return undefined;
     }
-    return { imageData: state.imageData };
+    return { imageData: state.imageData, chatId: state.chatId };
   }
   return undefined;
 }
@@ -119,7 +153,19 @@ export function getAwaitingImageFollowup(userId: number): { imageData: any } | u
 export function clearAwaitingImageFollowup(userId: number) {
   const state = userFlows.get(userId);
   if (state && state.type === 'awaiting_image_followup') {
+    chatAwaitingVoice.delete(state.chatId);
     userFlows.delete(userId);
+  }
+}
+
+export function clearAwaitingVoiceFollowup(chatId: number) {
+  const state = chatAwaitingVoice.get(chatId);
+  if (state) {
+    chatAwaitingVoice.delete(chatId);
+    const flow = userFlows.get(state.userId);
+    if (flow && flow.type === 'awaiting_image_followup' && flow.chatId === chatId) {
+      userFlows.delete(state.userId);
+    }
   }
 }
 

@@ -1,7 +1,98 @@
 import { AnalysisResult, TodoItem, TimeFrame, TaskSource } from '../types/analysis.js';
 import { db, detectTimeConflicts } from './db.js';
-import { kzLocalToUTC } from '../utils/timezone.js';
-export { detectTimeConflicts };
+import { kzLocalToUTC, utcToKzLocalDate, getKzToday, getKzTomorrow } from '../utils/timezone.js';
+import { DateTime } from 'luxon';
+export { detectTimeConflicts, getKzToday, getKzTomorrow };
+
+// ─── KZ date helpers ───────────────────────────────────────────────────────────
+// getKzToday() and getKzTomorrow() are now in timezone.ts (luxon-based)
+
+export function buildScheduledTimeKz(date: string | null | undefined, time: string | null | undefined): string | null {
+  if (!date) return null;
+  return `${date}T${time || '00:00'}`;
+}
+
+// ─── Report task preparation ───────────────────────────────────────────────────
+
+export function dedupeReportTasks(tasks: TodoItem[]): TodoItem[] {
+  const seen = new Set<string>();
+  const result: TodoItem[] = [];
+  for (const t of tasks) {
+    const key = `${t.task.trim().toLowerCase()}::${t.time || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(t);
+  }
+  return result;
+}
+
+export function prepareReportTasks(
+  tasks: TodoItem[],
+  targetDate: string | null,
+): { tasks: TodoItem[]; overdue: TodoItem[]; summaryOverdue?: string } {
+  const kzToday = getKzToday();
+  const deduped = dedupeReportTasks(tasks);
+
+  if (targetDate && targetDate !== kzToday) {
+    return { tasks: deduped, overdue: [] };
+  }
+
+  const dayTasks = deduped.filter((t) => {
+    const d = t.date || kzToday;
+    return d === kzToday || d >= kzToday;
+  });
+  const overdue = deduped.filter((t) => {
+    const d = t.date;
+    return d && d < kzToday && !t.done;
+  });
+
+  return { tasks: dayTasks, overdue };
+}
+
+// ─── Free time gaps ────────────────────────────────────────────────────────────
+
+const WORKDAY_START = 8 * 60;   // 08:00
+const WORKDAY_END = 22 * 60;    // 22:00
+const MIN_GAP_MINUTES = 20;
+
+function timeToMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function minutesToTime(mins: number): string {
+  return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+}
+
+export function findFreeTimeGaps(userId: number, targetDate: string): { start: string; end: string }[] {
+  const tasks = getTasksFiltered(userId, { date: targetDate }).filter((t) => t.time && !t.done);
+  if (tasks.length === 0) {
+    return [{ start: minutesToTime(WORKDAY_START), end: minutesToTime(WORKDAY_END) }];
+  }
+
+  const slots = tasks
+    .map((t) => ({
+      start: timeToMinutes(t.time!),
+      end: timeToMinutes(t.time!) + (t.duration || 30),
+    }))
+    .sort((a, b) => a.start - b.start);
+
+  const gaps: { start: string; end: string }[] = [];
+  let cursor = WORKDAY_START;
+
+  for (const slot of slots) {
+    if (slot.start - cursor >= MIN_GAP_MINUTES) {
+      gaps.push({ start: minutesToTime(cursor), end: minutesToTime(slot.start) });
+    }
+    cursor = Math.max(cursor, slot.end);
+  }
+
+  if (WORKDAY_END - cursor >= MIN_GAP_MINUTES) {
+    gaps.push({ start: minutesToTime(cursor), end: minutesToTime(WORKDAY_END) });
+  }
+
+  return gaps;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,8 +186,8 @@ const stmtDeletePlanHistoriesByDate = db.prepare("SELECT id FROM plan_history WH
 const stmtMarkTodoDoneByUser = db.prepare("UPDATE todos SET done = 1, completed_at = datetime('now') WHERE id = ? AND user_id = ?");
 const stmtCountDoneByUser = db.prepare('SELECT COUNT(*) as c FROM todos WHERE user_id = ? AND done = 1');
 const stmtInsertTodo = db.prepare(`
-  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, plan_history_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, plan_history_id, scheduled_time_kz)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtFindPlanByDate = db.prepare("SELECT id FROM plan_history WHERE user_id = ? AND substr(created_at, 1, 10) = ? ORDER BY created_at DESC LIMIT 1");
 const stmtGetLastPlanIdByChat = db.prepare('SELECT id FROM plan_history WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1');
@@ -116,7 +207,7 @@ export function getConflicts(userId: number, newTodos: TodoItem[]): Conflict[] {
 // ─── Plan Operations ──────────────────────────────────────────────────────────
 
 export function savePlan(chatId: number, userId: number, analysis: AnalysisResult, source: TaskSource = 'manual') {
-  const defaultDate = new Date().toISOString().substring(0, 10);
+  const defaultDate = getKzToday();
 
   // 1. Insert plan_history row
   const result = stmtInsertPlanHistory.run(
@@ -159,10 +250,15 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
 
     const isDuplicate = existingTodos.some((t: any) => {
       const tDate = t.date || defaultDate;
-      return t.task.trim().toLowerCase() === taskNorm && tDate === todoDate;
+      return (
+        t.task.trim().toLowerCase() === taskNorm &&
+        tDate === todoDate &&
+        (t.time || '') === (todo.time || '')
+      );
     });
 
     if (!isDuplicate) {
+      const scheduledTimeKz = buildScheduledTimeKz(todoDate, todo.time || null);
       stmtInsertTodo.run(
         todo.id,
         chatId,
@@ -176,7 +272,8 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
         todo.duration ?? 30,
         todo.location || null,
         todo.source || source,
-        planHistoryId
+        planHistoryId,
+        scheduledTimeKz
       );
       // Also add to existingTodos to prevent intra-batch duplicates
       existingTodos.push({ task: todo.task, date: todoDate });
@@ -210,20 +307,25 @@ export function getTasksFiltered(userId: number, filters: {
   dateFrom?: string | null;
   dateTo?: string | null;
   source?: TaskSource | null;
+  includeDone?: boolean;
 }): TodoItem[] {
-  let query = 'SELECT * FROM todos WHERE user_id = ? AND done = 0';
+  let query = 'SELECT * FROM todos WHERE user_id = ?';
   const params: any[] = [userId];
 
+  if (!filters.includeDone) {
+    query += ' AND done = 0';
+  }
+
   if (filters.date) {
-    query += ' AND date = ?';
+    query += " AND substr(COALESCE(scheduled_time_kz, date || 'T' || COALESCE(time, '00:00')), 1, 10) = ?";
     params.push(filters.date);
   }
   if (filters.dateFrom) {
-    query += ' AND date >= ?';
+    query += " AND substr(COALESCE(scheduled_time_kz, date || 'T' || COALESCE(time, '00:00')), 1, 10) >= ?";
     params.push(filters.dateFrom);
   }
   if (filters.dateTo) {
-    query += ' AND date <= ?';
+    query += " AND substr(COALESCE(scheduled_time_kz, date || 'T' || COALESCE(time, '00:00')), 1, 10) <= ?";
     params.push(filters.dateTo);
   }
   if (filters.beforeTime) {
@@ -256,14 +358,18 @@ export function completeTask(chatId: number, taskId: string, done: boolean): Tod
 
 export function rescheduleTask(chatId: number, taskId: string, newTime: string, newDate?: string): TodoItem | undefined {
   const newDatetime = newDate && newTime ? kzLocalToUTC(newDate, newTime) : null;
-  stmtUpdateTodoTimeByChat.run(newTime, newDatetime || null, newDate || null, taskId, chatId);
+  const scheduledTimeKz = buildScheduledTimeKz(newDate || null, newTime);
+  db.prepare("UPDATE todos SET time = ?, datetime = ?, date = ?, scheduled_time_kz = ? WHERE id = ? AND chat_id = ?")
+    .run(newTime, newDatetime || null, newDate || null, scheduledTimeKz, taskId, chatId);
   const row = stmtGetTodoById.get(taskId) as any;
   return row ? todoFromRow(row) : undefined;
 }
 
 export function updateTaskDateTime(userId: number, taskId: string, newDate: string, newTime: string): TodoItem | undefined {
   const newDatetime = kzLocalToUTC(newDate, newTime);
-  stmtUpdateTodoDateTimeByUser.run(newTime, newDate, newDatetime, taskId, userId);
+  const scheduledTimeKz = buildScheduledTimeKz(newDate, newTime);
+  db.prepare("UPDATE todos SET time = ?, date = ?, datetime = ?, scheduled_time_kz = ? WHERE id = ? AND user_id = ?")
+    .run(newTime, newDate, newDatetime, scheduledTimeKz, taskId, userId);
   const row = stmtGetTodoById.get(taskId) as any;
   return row ? todoFromRow(row) : undefined;
 }
@@ -372,8 +478,7 @@ export function getAllPlansForLLM(userId: number): string {
 }
 
 export function addTodoToPlan(chatId: number, userId: number, task: string, time: string, priority: string, date: string, source: TaskSource = 'manual'): TodoItem {
-  const now = new Date();
-  const todoDate = date || now.toISOString().substring(0, 10);
+  const todoDate = date || getKzToday();
   const todo: TodoItem = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     task,
@@ -386,7 +491,7 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
     source,
   };
 
-  const today = date || now.toISOString().substring(0, 10);
+  const today = todoDate;
   const taskNorm = task.trim().toLowerCase();
 
   // Check for duplicates
@@ -421,7 +526,8 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
   stmtInsertTodo.run(
     todo.id, chatId, userId, todo.task, todo.priority || 'medium',
     todo.done ? 1 : 0, todo.time || null, todo.datetime || null, todo.date || null,
-    todo.duration ?? 30, todo.location || null, todo.source || 'manual', planId
+    todo.duration ?? 30, todo.location || null, todo.source || 'manual', planId,
+    buildScheduledTimeKz(todoDate, todo.time || null)
   );
 
   console.log(`[PlanStore] Added todo: "${task}" at ${time} for ${today}`);
@@ -492,39 +598,26 @@ export function markTaskDone(userId: number, taskId: string): TodoItem | undefin
 }
 
 export function getTasksForPeriod(userId: number, period: string): TodoItem[] {
-  const todos = stmtGetAllTodosByUser.all(userId) as any[];
-  const now = new Date();
-  const today = now.toISOString().substring(0, 10);
+  const kzToday = getKzToday();
+  const kzTomorrow = getKzTomorrow();
 
-  let filterDate: string | null = null;
   if (period === 'today') {
-    filterDate = today;
-  } else if (period === 'tomorrow') {
-    const tom = new Date(now);
-    tom.setDate(tom.getDate() + 1);
-    filterDate = tom.toISOString().substring(0, 10);
+    return getTasksFiltered(userId, { date: kzToday, includeDone: true });
+  }
+  if (period === 'tomorrow') {
+    return getTasksFiltered(userId, { date: kzTomorrow, includeDone: true });
+  }
+  if (period === 'week') {
+    const kzNow = DateTime.now().setZone('Asia/Almaty');
+    const weekStart = kzNow.startOf('week'); // Monday
+    const weekEnd = weekStart.plus({ days: 6 });
+    const from = weekStart.toFormat('yyyy-MM-dd');
+    const to = weekEnd.toFormat('yyyy-MM-dd');
+    return getTasksFiltered(userId, { dateFrom: from, dateTo: to, includeDone: true });
   }
 
-  const results: TodoItem[] = [];
-  for (const t of todos) {
-    const todoDate = t.date || today;
-    if (period === 'all') {
-      results.push(todoFromRow(t));
-    } else if (period === 'week') {
-      if (t.plan_history_id) {
-        const planRow = db.prepare('SELECT created_at FROM plan_history WHERE id = ?').get(t.plan_history_id) as any;
-        if (planRow) {
-          const planDate = new Date(planRow.created_at);
-          const weekAgo = new Date(now);
-          weekAgo.setDate(weekAgo.getDate() - 7);
-          if (planDate >= weekAgo) results.push(todoFromRow(t));
-        }
-      }
-    } else if (filterDate && todoDate === filterDate) {
-      results.push(todoFromRow(t));
-    }
-  }
-  return results;
+  const todos = stmtGetAllTodosByUser.all(userId) as any[];
+  return todos.map(todoFromRow);
 }
 
 export function getPlanForWebApp(chatId: number) {

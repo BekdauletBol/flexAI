@@ -19,11 +19,13 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@types/luxon": "^3.7.1",
     "better-sqlite3": "^12.10.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "grammy": "^1.43.0",
+    "luxon": "^3.7.2",
     "openai": "^6.38.0",
     "p-queue": "^9.3.0",
     "pdfkit": "^0.18.0",
