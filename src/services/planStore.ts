@@ -207,6 +207,7 @@ export function getConflicts(userId: number, newTodos: TodoItem[]): Conflict[] {
 // ─── Plan Operations ──────────────────────────────────────────────────────────
 
 export function savePlan(chatId: number, userId: number, analysis: AnalysisResult, source: TaskSource = 'manual') {
+  console.log('[DB] savePlan called — DB path:', db.name, 'user:', userId, 'chat:', chatId, 'todos:', analysis.todos.length);
   const defaultDate = getKzToday();
 
   // 1. Insert plan_history row
@@ -275,6 +276,7 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
         planHistoryId,
         scheduledTimeKz
       );
+      console.log(`[DB] INSERTED todo: "${todo.task}" | date=${todoDate} time=${todo.time || '—'} | planHistoryId=${planHistoryId}`);
       // Also add to existingTodos to prevent intra-batch duplicates
       existingTodos.push({ task: todo.task, date: todoDate });
       insertedCount++;
@@ -284,6 +286,10 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
   }
 
   console.log(`[PlanStore] Saved plan for user ${userId} / chat ${chatId}: "${analysis.title}" (${insertedCount} todos, ${analysis.timeframe})`);
+
+  // Verify persistence: read back immediately after insert
+  const verifyRows = db.prepare('SELECT id, task, date, time FROM todos WHERE plan_history_id = ?').all(planHistoryId) as any[];
+  console.log(`[DB] VERIFY — planHistoryId=${planHistoryId} has ${verifyRows.length} todos in DB:`, verifyRows.map((r: any) => r.task).join(', '));
 }
 
 export function getPlan(chatId: number): StoredPlan | undefined {
@@ -295,7 +301,10 @@ export function getPlan(chatId: number): StoredPlan | undefined {
 }
 
 export function getUserTasks(userId: number): TodoItem[] {
+  console.log('[DB] Reading tasks for user:', userId);
+  console.log('[DB] DB path:', db.name);
   const rows = stmtGetAllTodosByUser.all(userId) as any[];
+  console.log('[DB] Row count:', rows.length);
   return rows.map(todoFromRow);
 }
 
@@ -345,8 +354,11 @@ export function getTasksFiltered(userId: number, filters: {
     params.push(filters.source);
   }
 
+  console.log('[DB] Reading tasks for user:', userId, 'date:', filters.date);
+  console.log('[DB] DB path:', db.name);
   query += ' ORDER BY date ASC, time ASC';
   const rows = db.prepare(query).all(...params) as any[];
+  console.log('[DB] Row count:', rows.length);
   return rows.map(todoFromRow);
 }
 
@@ -530,7 +542,9 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
     buildScheduledTimeKz(todoDate, todo.time || null)
   );
 
-  console.log(`[PlanStore] Added todo: "${task}" at ${time} for ${today}`);
+  // Verify persistence
+  const verify = db.prepare('SELECT id, task FROM todos WHERE id = ?').get(todo.id) as any;
+  console.log(`[DB] addTodoToPlan — "${task}" at ${time} for ${today} | planId=${planId} | verified=${!!verify}`);
   return todo;
 }
 
