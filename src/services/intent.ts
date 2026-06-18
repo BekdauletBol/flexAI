@@ -90,10 +90,16 @@ CRITICAL RULES:
 3. "напомни сделать X" (no time offset) → "action". "напомни через X [о task]" → "reminder"
 4. "перерыв в 14:00" (stating a break time) → "action". "когда перерыв?" (asking) → "free_time_query"
 5. For reschedule/complete/delete: extract target_task from the noun after the verb.
+6. Set fields to null if they don't apply to the detected intent. Never fill fields that belong to other intents.
 
-For "action": extract target_date, target_time, date_ranges if multiple days.
-For "report": extract date_from/date_to for ranges, target_date for single day, period.
-For "reminder": extract reminder_minutes (number) and target_task (string|null).
+FIELDS PER INTENT (only populate these, set all others to null):
+- "action": target_date, target_time ONLY. Do NOT set date_ranges, reminder_minutes, or filter fields.
+- "report", "query": target_date, target_time, after_time, date_from, date_to, date_ranges, period, priority_filter, source_filter. Do NOT set reminder_minutes.
+- "reminder": reminder_minutes, target_task ONLY. Do NOT set date_ranges or filter fields.
+- "reschedule", "complete", "delete": target_task, target_date, target_time ONLY.
+- "free_time_query": target_date ONLY.
+- "cancel_reminder": target_task ONLY.
+- "social", "clear", "summary", "list_reminders": no extra fields needed (all null).
 
 { "intent": "action|query|reschedule|delete|complete|report|clear|summary|social|free_time_query|reminder|list_reminders|cancel_reminder", "confidence": 0.0-1.0, "target_task": "string|null", "target_date": "YYYY-MM-DD|null", "target_time": "HH:MM|null", "after_time": "HH:MM|null", "date_from": "YYYY-MM-DD|null", "date_to": "YYYY-MM-DD|null", "date_ranges": [{"date":"YYYY-MM-DD","beforeTime":"HH:MM|null","afterTime":"HH:MM|null"}], "priority_filter": "high|medium|low|null", "source_filter": "teams|telegram|voice|manual|null", "reminder_minutes": "number|null" }`;
 
@@ -476,6 +482,58 @@ export function quickIntentOverride(
   };
 }
 
+function sanitizeIntentResult(result: IntentResult): void {
+  const intent = result.intent;
+  // action: keep target_date, target_time only — strip filter/reminder fields
+  if (intent === 'action') {
+    result.reminder_minutes = null;
+    result.date_ranges = undefined;
+    result.date_from = undefined;
+    result.date_to = undefined;
+    result.after_time = undefined;
+    result.priority_filter = undefined;
+    result.source_filter = undefined;
+    result.period = undefined;
+  }
+  // report/query: keep filter fields — strip reminder_minutes
+  else if (intent === 'report' || intent === 'query') {
+    result.reminder_minutes = null;
+  }
+  // reminder: keep reminder_minutes and target_task — strip filter fields
+  else if (intent === 'reminder') {
+    result.date_ranges = undefined;
+    result.date_from = undefined;
+    result.date_to = undefined;
+    result.after_time = undefined;
+    result.priority_filter = undefined;
+    result.source_filter = undefined;
+    result.period = undefined;
+  }
+  // reschedule/complete/delete: keep target_task, target_date, target_time only
+  else if (intent === 'reschedule' || intent === 'complete' || intent === 'delete') {
+    result.reminder_minutes = null;
+    result.date_ranges = undefined;
+    result.date_from = undefined;
+    result.date_to = undefined;
+    result.after_time = undefined;
+    result.priority_filter = undefined;
+    result.source_filter = undefined;
+    result.period = undefined;
+  }
+  // social/clear/summary/free_time_query/list_reminders/cancel_reminder: minimal fields
+  else {
+    result.reminder_minutes = null;
+    result.date_ranges = undefined;
+    result.date_from = undefined;
+    result.date_to = undefined;
+    result.after_time = undefined;
+    result.target_time = undefined;
+    result.priority_filter = undefined;
+    result.source_filter = undefined;
+    result.period = undefined;
+  }
+}
+
 export async function detectIntent(transcript: string, userId?: number): Promise<IntentResult> {
   console.log(
     "[Intent] Starting detectIntent, model:",
@@ -523,6 +581,7 @@ export async function detectIntent(transcript: string, userId?: number): Promise
       const result = JSON.parse(content) as IntentResult;
       result.intent = result.intent || "action";
       result.confidence = result.confidence || 0.5;
+      sanitizeIntentResult(result);
 
       console.log(
         `[Intent] "${result.intent}" (${(result.confidence * 100).toFixed(0)}%)`,
@@ -563,6 +622,7 @@ export async function detectIntent(transcript: string, userId?: number): Promise
       const result = JSON.parse(content) as IntentResult;
       result.intent = result.intent || "action";
       result.confidence = result.confidence || 0.5;
+      sanitizeIntentResult(result);
 
       console.log(
         `[Intent] fallback "${result.intent}" (${(result.confidence * 100).toFixed(0)}%)`,
