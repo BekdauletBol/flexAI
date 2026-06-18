@@ -3,6 +3,9 @@ import OpenAI from 'openai';
 import { config } from '../config.js';
 import { TodoItem } from '../types/analysis.js';
 import { groq, GROQ_MODEL, hasGroq } from './groq.js';
+import { DateTime } from 'luxon';
+
+const KZ_ZONE = 'Asia/Almaty';
 
 const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
@@ -151,10 +154,10 @@ export function generateWeeklyReport(
   lines.push('');
 
   for (const plan of plans) {
-    const date = new Date(plan.createdAt).toLocaleDateString(
-      language === 'ru' ? 'ru-RU' : language === 'kk' ? 'kk-KZ' : 'en-US',
-      { weekday: 'long', month: 'short', day: 'numeric' }
-    );
+    const date = DateTime.fromISO(plan.createdAt, { zone: 'utc' })
+      .setZone(KZ_ZONE)
+      .setLocale(language === 'ru' ? 'ru-RU' : language === 'kk' ? 'kk-KZ' : 'en-US')
+      .toFormat('cccc, MMM d');
     lines.push(date);
     lines.push('');
 

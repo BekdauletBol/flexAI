@@ -3,6 +3,8 @@ import { config } from '../config.js';
 import { AnalysisResult } from '../types/analysis.js';
 import { v4 as uuid } from 'uuid';
 import { getTemporalContext } from './userConfig.js';
+import { DateTime } from 'luxon';
+import { KZ_ZONE } from '../utils/timezone.js';
 
 const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
@@ -47,12 +49,9 @@ function safeJsonParse(content: string): any | null {
  * @returns "YYYY-MM-DD" string
  */
 function getNextDate(baseDate: string, daysOffset: number): string {
-  const [y, m, d] = baseDate.split('-').map(Number);
-  const date = new Date(y, m - 1, d + daysOffset);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return DateTime.fromISO(baseDate, { zone: KZ_ZONE })
+    .plus({ days: daysOffset })
+    .toFormat('yyyy-MM-dd');
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -162,10 +161,10 @@ export async function analyzeTranscript(transcript: string, userId?: number): Pr
     const temporal = getTemporalContext(userId || 0);
 
     // Build context prompt with user's LOCAL time, not server time
-    const localDateObj = new Date(temporal.localISO);
-    const dayOfWeek = localDateObj.toLocaleDateString('en-US', { weekday: 'long' });
-    const monthDay = localDateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
-    const year = localDateObj.getFullYear();
+    const localDt = DateTime.fromISO(temporal.localISO, { zone: temporal.timezone });
+    const dayOfWeek = localDt.toFormat('cccc');
+    const monthDay = localDt.toFormat('MMMM d');
+    const year = localDt.year;
 
     const contextPrompt = `
 CURRENT CONTEXT (critical — use this for ALL date/time calculations):

@@ -3,6 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import { AnalysisResult, TodoItem } from '../types/analysis.js';
 import { getLabels } from '../types/i18n.js';
+import { DateTime } from 'luxon';
+
+const KZ_ZONE = 'Asia/Almaty';
 
 const ROOT = path.resolve(process.cwd());
 const FONT_DIR = path.join(ROOT, 'assets', 'fonts');
@@ -36,17 +39,14 @@ const MAX_Y = PAGE_H - M - 10;
 const TIMELINE_LINE_X = 85;
 const TASK_START_X = 110;
 
-function fmtDate(d: Date): string {
-  const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return `${mo[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+function fmtDate(d: DateTime): string {
+  return d.toFormat('MMM d, yyyy · HH:mm');
 }
 
 function formatDate(dateStr: string, lang: string): string {
-  const date = new Date(dateStr + 'T12:00:00');
-  return date.toLocaleDateString(
-    lang === 'ru' ? 'ru-RU' : 'en-US',
-    { day: 'numeric', month: 'long' }
-  );
+  const date = DateTime.fromISO(dateStr, { zone: KZ_ZONE });
+  const locale = lang === 'ru' ? 'ru-RU' : 'en-US';
+  return date.setLocale(locale).toFormat('d MMMM');
 }
 
 function drawBg(doc: PDFKit.PDFDocument) {
@@ -83,7 +83,7 @@ function extractTags(todos: TodoItem[]): string[] {
 export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
   const labels = getLabels(analysis.language);
   const fonts = getFonts(analysis.language);
-  const now = new Date();
+  const now = DateTime.now().setZone(KZ_ZONE);
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: M, bufferPages: true, autoFirstPage: true });
@@ -293,7 +293,7 @@ export async function generateMultiDateReportPdf(
   language: string
 ): Promise<Buffer> {
   const fonts = getFonts(language);
-  const now = new Date();
+  const now = DateTime.now().setZone(KZ_ZONE);
   const isRu = language === 'ru';
   const isKk = language === 'kk';
 

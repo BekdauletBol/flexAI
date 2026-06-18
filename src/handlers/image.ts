@@ -6,6 +6,9 @@ import { getUserTasks } from "../services/planStore.js";
 import { getUserConfig } from "../services/userConfig.js";
 import { logger } from "../logger.js";
 import { setAwaitingImageFollowup, clearAwaitingImageFollowup } from "../services/pendingStore.js";
+import { DateTime } from 'luxon';
+
+const KZ_ZONE = 'Asia/Almaty';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -129,7 +132,7 @@ export async function handleImage(ctx: Context) {
       mappedSource: mapSourceAppToTaskSource(analysis.source_app),
       analysis,
       lang,
-      expiresAt: Date.now() + 5 * 60 * 1000, // 5 min TTL
+      expiresAt: DateTime.now().toMillis() + 5 * 60 * 1000, // 5 min TTL
       selections: new Array(analysis.events.length).fill(undefined),
     });
 
@@ -212,18 +215,9 @@ async function analyzeScheduleScreenshot(
 ): Promise<ScreenshotAnalysis> {
   const client = getVisionClient();
 
-  const now = new Date();
-  const todayStr = now.toLocaleDateString("en-US", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-  const timeStr = now.toLocaleTimeString("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const now = DateTime.now().setZone(KZ_ZONE);
+  const todayStr = now.toFormat('cccc, MMMM d, yyyy');
+  const timeStr = now.toFormat('HH:mm');
 
   const existingScheduleText =
     existingTasks.length > 0
@@ -360,11 +354,10 @@ function buildAnalysisMessage(
   }
 
   if (analysis.detected_date) {
-    const d = new Date(analysis.detected_date + "T12:00:00");
-    const dateLabel = d.toLocaleDateString(
-      lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US",
-      { weekday: "long", day: "numeric", month: "long" },
-    );
+    const d = DateTime.fromISO(analysis.detected_date, { zone: KZ_ZONE });
+    const dateLabel = d
+      .setLocale(lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US")
+      .toFormat('cccc, d MMMM');
     lines.push(dateLabel);
   }
 
@@ -429,11 +422,10 @@ function buildAnalysisMessage(
         if (event.end_time) line += `–${event.end_time}`;
       }
       if (event.date) {
-        const d = new Date(event.date + "T12:00:00");
-        const dateLabel = d.toLocaleDateString(
-          lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US",
-          { month: "short", day: "numeric" },
-        );
+        const d = DateTime.fromISO(event.date, { zone: KZ_ZONE });
+        const dateLabel = d
+          .setLocale(lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US")
+          .toFormat('MMM d');
         line += `  ·  ${dateLabel}`;
       }
       lines.push(line);

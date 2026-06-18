@@ -146,7 +146,7 @@ export function parseTargetDateFromText(text: string): string | null {
   if (ddmmyyyy) {
     const day = parseInt(ddmmyyyy[1], 10);
     const month = parseInt(ddmmyyyy[2], 10);
-    let year = ddmmyyyy[3] ? parseInt(ddmmyyyy[3], 10) : new Date().getFullYear();
+    let year = ddmmyyyy[3] ? parseInt(ddmmyyyy[3], 10) : DateTime.now().setZone('Asia/Almaty').year;
     if (year < 100) year += 2000;
     if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
       return formatKzDate(year, month, day);
@@ -159,7 +159,7 @@ export function parseTargetDateFromText(text: string): string | null {
     const monthWord = dayMonth[2];
     const month = MONTHS_RU[monthWord] || MONTHS_KK[monthWord] || MONTHS_EN[monthWord];
     if (month) {
-      const year = new Date().getFullYear();
+      const year = DateTime.now().setZone('Asia/Almaty').year;
       return formatKzDate(year, month, day);
     }
   }
@@ -544,10 +544,10 @@ export async function detectIntent(transcript: string, userId?: number): Promise
 
   // Get user-specific temporal context
   const temporal = getTemporalContext(userId || 0);
-  const localDateObj = new Date(temporal.localISO);
-  const dayOfWeek = localDateObj.toLocaleDateString("en-US", { weekday: "long" });
-  const monthDay = localDateObj.toLocaleDateString("en-US", { month: "long", day: "numeric" });
-  const year = localDateObj.getFullYear();
+  const localDt = DateTime.fromISO(temporal.localISO, { zone: temporal.timezone });
+  const dayOfWeek = localDt.toFormat('cccc');
+  const monthDay = localDt.toFormat('MMMM d');
+  const year = localDt.year;
 
   const systemPromptWithDate = `Today is ${dayOfWeek}, ${monthDay}, ${year} in ${temporal.timezone}. Current local time: ${temporal.localTime}. Today's date: ${temporal.localDate}.\n\n${SYSTEM_PROMPT}`;
 
@@ -709,10 +709,10 @@ export async function extractRescheduleInfo(
 ): Promise<RescheduleExtraction | null> {
   try {
     const temporal = getTemporalContext(userId || 0);
-    const localDateObj = new Date(temporal.localISO);
-    const dayOfWeek = localDateObj.toLocaleDateString("en-US", { weekday: "long" });
-    const monthDay = localDateObj.toLocaleDateString("en-US", { month: "long", day: "numeric" });
-    const year = localDateObj.getFullYear();
+    const localDt = DateTime.fromISO(temporal.localISO, { zone: temporal.timezone });
+    const dayOfWeek = localDt.toFormat('cccc');
+    const monthDay = localDt.toFormat('MMMM d');
+    const year = localDt.year;
 
     const response = await withTimeout(
       llm.chat.completions.create({
@@ -750,10 +750,10 @@ export async function extractDeleteInfo(
 ): Promise<DeleteExtraction | null> {
   try {
     const temporal = getTemporalContext(userId || 0);
-    const localDateObj = new Date(temporal.localISO);
-    const dayOfWeek = localDateObj.toLocaleDateString("en-US", { weekday: "long" });
-    const monthDay = localDateObj.toLocaleDateString("en-US", { month: "long", day: "numeric" });
-    const year = localDateObj.getFullYear();
+    const localDt = DateTime.fromISO(temporal.localISO, { zone: temporal.timezone });
+    const dayOfWeek = localDt.toFormat('cccc');
+    const monthDay = localDt.toFormat('MMMM d');
+    const year = localDt.year;
 
     const response = await withTimeout(
       llm.chat.completions.create({
@@ -788,13 +788,8 @@ export async function extractViewInfo(
   transcript: string,
 ): Promise<ViewExtraction | null> {
   try {
-    const now = new Date();
-    const dateStr = now.toLocaleDateString("en-US", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
+    const now = DateTime.now().setZone('Asia/Almaty');
+    const dateStr = now.toFormat('cccc, MMMM d, yyyy');
     const response = await withTimeout(
       llm.chat.completions.create({
         model: MODEL,
@@ -837,10 +832,10 @@ export async function extractReportInfo(
 ): Promise<ReportExtraction | null> {
   try {
     const temporal = getTemporalContext(userId || 0);
-    const localDateObj = new Date(temporal.localISO);
-    const dayOfWeek = localDateObj.toLocaleDateString("en-US", { weekday: "long" });
-    const monthDay = localDateObj.toLocaleDateString("en-US", { month: "long", day: "numeric" });
-    const year = localDateObj.getFullYear();
+    const localDt = DateTime.fromISO(temporal.localISO, { zone: temporal.timezone });
+    const dayOfWeek = localDt.toFormat('cccc');
+    const monthDay = localDt.toFormat('MMMM d');
+    const year = localDt.year;
 
     const response = await withTimeout(
       llm.chat.completions.create({

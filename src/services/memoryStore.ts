@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { DateTime } from 'luxon';
 
 export interface UserMemory {
   habits: string[];
@@ -59,7 +60,7 @@ export function updateUserMemory(userId: number, update: Partial<UserMemory>) {
     important_dates: update.important_dates || current.important_dates,
     patterns: { ...current.patterns, ...(update.patterns || {}) },
     places: update.places || current.places,
-    last_updated: new Date().toISOString(),
+    last_updated: DateTime.now().setZone('Asia/Almaty').toUTC().toISO()!,
   };
   save();
   console.log(`[Memory] Updated for user ${userId}`);
@@ -126,7 +127,7 @@ export function deleteMemoryEntry(userId: number, key: string, index: number): b
   const arr: unknown = (mem as unknown as Record<string, unknown>)[key];
   if (!Array.isArray(arr) || index < 0 || index >= arr.length) return false;
   arr.splice(index, 1);
-  mem.last_updated = new Date().toISOString();
+  mem.last_updated = DateTime.now().setZone('Asia/Almaty').toUTC().toISO()!;
   memoryData[String(userId)] = mem;
   save();
   return true;

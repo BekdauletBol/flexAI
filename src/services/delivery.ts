@@ -6,10 +6,13 @@ import { getPlanForWebApp } from './planStore.js';
 import { config } from '../config.js';
 import { InlineKeyboard } from 'grammy';
 import { generatePdf } from './pdf.js';
+import { DateTime } from 'luxon';
+
+const KZ_ZONE = 'Asia/Almaty';
 
 function fileName(): string {
-  const d = new Date(), p = (n: number) => n.toString().padStart(2, '0');
-  return `note_${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}.pdf`;
+  const d = DateTime.now().setZone(KZ_ZONE);
+  return `note_${d.toFormat('yyyy-MM-dd_HH-mm')}.pdf`;
 }
 
 export async function startDeliveryFlow(ctx: Context, pending: PendingVoiceNote) {
@@ -23,7 +26,7 @@ export async function startDeliveryFlow(ctx: Context, pending: PendingVoiceNote)
     pending.resolvedTodos || analysis.todos,
     analysis.tags,
     lang,
-    new Date(pending.createdAt)
+    DateTime.fromMillis(pending.createdAt)
   );
   
   await ctx.reply(summaryText);

@@ -8,6 +8,7 @@ import { getUserConfig } from './userConfig.js';
 import { savePending } from './pendingStore.js';
 import { startDeliveryFlow } from './delivery.js';
 import { buildConflictMessage, getConflictKeyboard, getNavKeyboard } from './messages.js';
+import { DateTime } from 'luxon';
 import { scheduleReminders } from './scheduler.js';
 import { AnalysisResult } from '../types/analysis.js';
 import { generateDailyReportPdf } from './report.js';
@@ -154,7 +155,7 @@ export async function handleTextMessage(ctx: Context, text: string) {
           const pdfBuf = await generateDailyReportPdf(userId, today, userLang);
           try { await ctx.api.deleteMessage(chatId, waitMsg.message_id); } catch {}
           await ctx.replyWithDocument(
-            new InputFile(pdfBuf, `report_${today}_${Date.now()}.pdf`),
+            new InputFile(pdfBuf, `report_${today}_${DateTime.now().toMillis()}.pdf`),
             { caption: 'Report', reply_markup: getNavKeyboard(userLang) },
           );
         } catch (err: any) {
@@ -294,5 +295,5 @@ export async function handleTextMessage(ctx: Context, text: string) {
     scheduleReminders(chatId, userId, analysis.todos, analysis.language);
   }
 
-  await startDeliveryFlow(ctx, { ...pendingData, id: pendingId, createdAt: Date.now() });
+  await startDeliveryFlow(ctx, { ...pendingData, id: pendingId, createdAt: DateTime.now().toMillis() });
 }

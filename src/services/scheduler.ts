@@ -176,7 +176,7 @@ export function rescheduleReminder(chatId: number, taskId: string, task: string,
 }
 
 export function updateReminderOffsets(chatId: number, offsetMinutes: number) {
-  const now = Date.now();
+  const now = DateTime.now().toMillis();
   for (const r of reminders) {
     if (r.chatId === chatId && !r.notified) {
       // If we don't have the original event time easily available here,
@@ -190,7 +190,7 @@ export function updateReminderOffsets(chatId: number, offsetMinutes: number) {
 export function snoozeReminder(taskId: string, minutes: number) {
   const reminder = reminders.find(r => r.taskId === taskId);
   if (reminder) {
-    reminder.triggerAt = Date.now() + minutes * 60 * 1000;
+    reminder.triggerAt = DateTime.now().toMillis() + minutes * 60 * 1000;
     reminder.notified = false;
     reminder.snoozedUntil = reminder.triggerAt;
     logger.info(`[Scheduler] Snoozed reminder for "${reminder.task}" by ${minutes} min`);
@@ -214,7 +214,7 @@ export function snoozeReminderUntilMorning(taskId: string, language: string) {
 
 async function checkReminders() {
   if (!bot) return;
-  const now = Date.now();
+  const now = DateTime.now().toMillis();
 
   for (const r of reminders) {
     if (r.notified || now < r.triggerAt) continue;

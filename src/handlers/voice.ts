@@ -2,6 +2,9 @@ import { Context, InputFile, InlineKeyboard } from "grammy";
 import { config } from "../config.js";
 import { transcribeAudio } from "../services/whisper.js";
 import { analyzeTranscript } from "../services/analysis.js";
+import { DateTime } from 'luxon';
+
+const KZ_ZONE = 'Asia/Almaty';
 import {
   scheduleReminders,
   cancelReminderByTaskId,
@@ -345,16 +348,9 @@ async function downloadFile(url: string, dest: string): Promise<void> {
   });
 }
 
-function formatViewDate(date: Date, lang: string): string {
-  return date.toLocaleDateString(
-    lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US",
-    {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    },
-  );
+function formatViewDate(date: DateTime, lang: string): string {
+  const locale = lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US";
+  return date.setLocale(locale).toFormat('cccc, d MMMM yyyy');
 }
 
 function formatViewPlans(plans: any[], lang: string): string {
@@ -367,7 +363,7 @@ function formatViewPlans(plans: any[], lang: string): string {
   }
   const lines: string[] = [];
   for (const plan of plans) {
-    const date = formatViewDate(new Date(plan.createdAt), lang);
+    const date = formatViewDate(DateTime.fromISO(plan.createdAt, { zone: 'utc' }).setZone(KZ_ZONE), lang);
     lines.push("");
     lines.push(date);
     lines.push("");
@@ -433,7 +429,7 @@ USER'S EXISTING SCHEDULE:
 ${existingTasksText || "No existing tasks"}
 
 Analyze the user's voice command about the screenshot tasks.
-Current date/time: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+Current date/time: ${DateTime.now().setZone(KZ_ZONE).toFormat('cccc, MMMM d, yyyy, HH:mm')}
 
 Return ONLY this JSON with NO extra text:
 {
@@ -539,7 +535,7 @@ Return ONLY this JSON with NO extra text:
             busy_slots: [],
             summary: "",
           },
-          expiresAt: Date.now() + 60000,
+          expiresAt: DateTime.now().toMillis() + 60000,
         });
         const keyboard = new InlineKeyboard().text(
           lang === "ru"
@@ -651,7 +647,7 @@ export async function handleVoice(ctx: Context) {
     const url = `https://api.telegram.org/file/bot${config.telegramToken}/${f.file_path}`;
     const tmpDir = path.resolve(process.cwd(), "temp");
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-    tempFile = path.join(tmpDir, `v_${Date.now()}.ogg`);
+    tempFile = path.join(tmpDir, `v_${DateTime.now().toMillis()}.ogg`);
     await downloadFile(url, tempFile);
 
     // 2. Transcribe
@@ -676,7 +672,7 @@ export async function handleVoice(ctx: Context) {
 
     // Clean up expired pending image data
     for (const [uid, data] of pendingImageTasks) {
-      if (data.expiresAt < Date.now()) pendingImageTasks.delete(uid);
+      if (data.expiresAt < DateTime.now().toMillis()) pendingImageTasks.delete(uid);
     }
 
     const chatId = ctx.chat?.id;
@@ -990,7 +986,7 @@ export async function handlePlanIntent(
     const userSettings = getUserConfig(userId);
     const hasCoords =
       userSettings.lat !== undefined && userSettings.lng !== undefined;
-    const targetTime = analysis.visit_datetime || new Date().toISOString();
+    const targetTime = analysis.visit_datetime || DateTime.now().setZone(KZ_ZONE).toUTC().toISO()!;
     try {
       const placePromise = searchPlace(analysis.location_query);
       const weatherPromise = hasCoords
@@ -1124,7 +1120,7 @@ export async function handlePlanIntent(
   await startDeliveryFlow(ctx, {
     ...pendingData,
     id: pendingId,
-    createdAt: Date.now(),
+    createdAt: DateTime.now().toMillis(),
   });
 
   console.log(
@@ -1331,8 +1327,8 @@ async function handleDeleteIntent(
   }
 
   if (info.type === "day") {
-    const dateStr = info.date || new Date().toISOString().substring(0, 10);
-    const formattedDate = formatViewDate(new Date(dateStr + "T12:00:00"), lang);
+    const dateStr = info.date || DateTime.now().setZone(KZ_ZONE).toFormat('yyyy-MM-dd');
+    const formattedDate = formatViewDate(DateTime.fromISO(dateStr, { zone: KZ_ZONE }), lang);
     const count = deletePlansByDate(userId, dateStr);
     if (count > 0) {
       // Cancel all reminders for tasks on that date
@@ -1889,10 +1885,9 @@ async function handleFreeTimeIntent(
   if (!targetDate) targetDate = getKzToday();
 
   const gaps = findFreeTimeGaps(userId, targetDate);
-  const dateLabel = new Date(targetDate + "T12:00:00").toLocaleDateString(
-    lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US",
-    { weekday: "long", day: "numeric", month: "long" },
-  );
+  const dateLabel = DateTime.fromISO(targetDate, { zone: KZ_ZONE })
+    .setLocale(lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US")
+    .toFormat('cccc, d MMMM');
 
   if (gaps.length === 0) {
     await ctx.reply(
@@ -2049,7 +2044,7 @@ export async function routeByIntent(
         } catch {}
 
         await ctx.replyWithDocument(
-          new InputFile(pdfBuf, `report_${targetDate}_${Date.now()}.pdf`),
+          new InputFile(pdfBuf, `report_${targetDate}_${DateTime.now().toMillis()}.pdf`),
           { caption: "Report", reply_markup: getNavKeyboard(lang) },
         );
       } catch (err: any) {
@@ -2119,9 +2114,8 @@ export async function routeByIntent(
 
 function getTriggerTimeStr(time: string, offsetMinutes: number): string {
   const [h, m] = time.split(":").map(Number);
-  const d = new Date();
-  d.setHours(h, m - offsetMinutes, 0, 0);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const d = DateTime.now().setZone(KZ_ZONE).set({ hour: h, minute: m, second: 0, millisecond: 0 }).minus({ minutes: offsetMinutes });
+  return d.toFormat('HH:mm');
 }
 
 async function handleCommandIntent(
@@ -2217,12 +2211,10 @@ async function handleCommandIntent(
         });
         const tasks = dedupeReportTasks(rawTasks);
         if (tasks.length > 0) {
-          const d = dr.date ? new Date(dr.date + "T12:00:00") : null;
+          const d = dr.date ? DateTime.fromISO(dr.date, { zone: KZ_ZONE }) : null;
           const dateLabel = d
-            ? d.toLocaleDateString(
-                lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US",
-                { weekday: "short", month: "short", day: "numeric" },
-              )
+            ? d.setLocale(lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US")
+                .toFormat('ccc, MMM d')
             : dr.date;
           let label = dateLabel;
           if (dr.beforeTime)
@@ -2255,7 +2247,7 @@ async function handleCommandIntent(
           await ctx.api.deleteMessage(ctx.chat!.id, waitMsg.message_id);
         } catch {}
         await ctx.replyWithDocument(
-          new InputFile(pdfBuf, `report_${userId}_${Date.now()}.pdf`),
+          new InputFile(pdfBuf, `report_${userId}_${DateTime.now().toMillis()}.pdf`),
           { caption: "Report", reply_markup: getNavKeyboard(lang) },
         );
       } catch (err) {
@@ -2272,7 +2264,7 @@ async function handleCommandIntent(
       }
     } else {
       if (hasPeriod && !hasDateRange && !intentResult.target_date) {
-        const now = new Date();
+        const kzNow = DateTime.now().setZone(KZ_ZONE);
         const kzToday = getKzToday();
         const period = intentResult.period;
         if (period === "today") {
@@ -2280,19 +2272,15 @@ async function handleCommandIntent(
         } else if (period === "tomorrow") {
           intentResult.target_date = getKzTomorrow();
         } else if (period === "week") {
-          const kzNow = new Date(now.getTime() + 5 * 60 * 60 * 1000);
-          const weekStart = new Date(kzNow);
-          weekStart.setUTCDate(kzNow.getUTCDate() - kzNow.getUTCDay() + 1);
-          const weekEnd = new Date(weekStart);
-          weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
-          intentResult.date_from = `${weekStart.getUTCFullYear()}-${String(weekStart.getUTCMonth() + 1).padStart(2, '0')}-${String(weekStart.getUTCDate()).padStart(2, '0')}`;
-          intentResult.date_to = `${weekEnd.getUTCFullYear()}-${String(weekEnd.getUTCMonth() + 1).padStart(2, '0')}-${String(weekEnd.getUTCDate()).padStart(2, '0')}`;
+          const weekStart = kzNow.startOf('week'); // Monday
+          const weekEnd = weekStart.plus({ days: 6 });
+          intentResult.date_from = weekStart.toFormat('yyyy-MM-dd');
+          intentResult.date_to = weekEnd.toFormat('yyyy-MM-dd');
         } else if (period === "month") {
-          const kzNow = new Date(now.getTime() + 5 * 60 * 60 * 1000);
-          const monthStart = new Date(Date.UTC(kzNow.getUTCFullYear(), kzNow.getUTCMonth(), 1));
-          const monthEnd = new Date(Date.UTC(kzNow.getUTCFullYear(), kzNow.getUTCMonth() + 1, 0));
-          intentResult.date_from = `${monthStart.getUTCFullYear()}-${String(monthStart.getUTCMonth() + 1).padStart(2, '0')}-${String(monthStart.getUTCDate()).padStart(2, '0')}`;
-          intentResult.date_to = `${monthEnd.getUTCFullYear()}-${String(monthEnd.getUTCMonth() + 1).padStart(2, '0')}-${String(monthEnd.getUTCDate()).padStart(2, '0')}`;
+          const monthStart = kzNow.startOf('month');
+          const monthEnd = kzNow.endOf('month');
+          intentResult.date_from = monthStart.toFormat('yyyy-MM-dd');
+          intentResult.date_to = monthEnd.toFormat('yyyy-MM-dd');
         }
         hasDateRange = intentResult.date_from || intentResult.date_to;
         hasFilters = hasFilters || !!intentResult.target_date || hasDateRange;
@@ -2343,7 +2331,7 @@ async function handleCommandIntent(
           await ctx.api.deleteMessage(ctx.chat!.id, waitMsg.message_id);
         } catch {}
         await ctx.replyWithDocument(
-          new InputFile(pdfBuf, `report_${userId}_${Date.now()}.pdf`),
+          new InputFile(pdfBuf, `report_${userId}_${DateTime.now().toMillis()}.pdf`),
           { caption: "Report", reply_markup: getNavKeyboard(lang) },
         );
       } catch (err: any) {
@@ -2383,7 +2371,7 @@ async function handleCommandIntent(
         await ctx.api.deleteMessage(ctx.chat!.id, waitMsg.message_id);
       } catch {}
       await ctx.replyWithDocument(
-        new InputFile(pdfBuf, `weekly_${userId}_${Date.now()}.pdf`),
+        new InputFile(pdfBuf, `weekly_${userId}_${DateTime.now().toMillis()}.pdf`),
         { caption: "Weekly Report", reply_markup: getNavKeyboard(lang) },
       );
     } catch (err: any) {

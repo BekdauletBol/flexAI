@@ -2,6 +2,9 @@ import PDFDocument from 'pdfkit';
 import path from 'path';
 import { db } from './db.js';
 import { getLabels, Lang } from '../types/i18n.js';
+import { DateTime } from 'luxon';
+
+const KZ_ZONE = 'Asia/Almaty';
 
 const ROOT = path.resolve(process.cwd());
 const FONT_DIR = path.join(ROOT, 'assets', 'fonts');
@@ -102,17 +105,14 @@ function queryAllTasks(userId: number): TaskRow[] {
 }
 
 function formatDateHeader(dateStr: string, lang: string): string {
-  const d = new Date(dateStr + 'T12:00:00');
-  return d.toLocaleDateString(
-    lang === 'ru' ? 'ru-RU' : lang === 'kk' ? 'kk-KZ' : 'en-US',
-    { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }
-  );
+  const d = DateTime.fromISO(dateStr, { zone: KZ_ZONE });
+  const locale = lang === 'ru' ? 'ru-RU' : lang === 'kk' ? 'kk-KZ' : 'en-US';
+  return d.setLocale(locale).toFormat('cccc, d MMMM yyyy');
 }
 
 function formatNow(): string {
-  const d = new Date();
-  const mo = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return `${mo[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const d = DateTime.now().setZone(KZ_ZONE);
+  return d.toFormat('MMM d, yyyy · HH:mm');
 }
 
 /**

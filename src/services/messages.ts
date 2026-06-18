@@ -1,6 +1,9 @@
 import { InlineKeyboard } from "grammy";
 import { TodoItem, AnalysisResult } from "../types/analysis.js";
 import { Conflict } from "./planStore.js";
+import { DateTime } from 'luxon';
+
+const KZ_ZONE = 'Asia/Almaty';
 
 const SEP = "———————————————";
 
@@ -16,7 +19,7 @@ export function buildSummaryMessage(
   todos: TodoItem[],
   tags: string[],
   language: string,
-  recordedAt: Date,
+  recordedAt: DateTime,
 ): string {
   const lines: string[] = [];
 
@@ -267,13 +270,10 @@ export function buildRescheduleDatePicker(
 }
 
 export function getRescheduleDateKeyboard(language: string): InlineKeyboard {
-  const now = new Date();
-  const fmt = (d: Date) =>
-    d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  const tom = new Date(now);
-  tom.setDate(tom.getDate() + 1);
-  const in2 = new Date(now);
-  in2.setDate(in2.getDate() + 2);
+  const now = DateTime.now().setZone(KZ_ZONE);
+  const fmt = (dt: DateTime) => dt.toFormat('MMM d');
+  const tom = now.plus({ days: 1 });
+  const in2 = now.plus({ days: 2 });
 
   const today = fmt(now);
   const tomorrow = fmt(tom);
@@ -358,8 +358,7 @@ export function buildRescheduleConfirm(
 ): string {
   const fmt = (s: string) => {
     if (!s) return "";
-    const d = new Date(s + "T12:00:00");
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return DateTime.fromISO(s, { zone: KZ_ZONE }).toFormat('MMM d');
   };
   const oldLabel = fmt(oldDate);
   const newLabel = fmt(newDate);

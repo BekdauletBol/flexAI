@@ -15,6 +15,16 @@ if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
+// Clean up stale WAL/SHM files from previous crashes to prevent SQLITE_IOERR_SHMSIZE
+for (const suffix of ['-wal', '-shm']) {
+  const f = DB_PATH + suffix;
+  try {
+    if (fs.existsSync(f)) fs.unlinkSync(f);
+  } catch (err) {
+    logger.warn(`[DB] Could not remove stale ${suffix} file: ${err}`);
+  }
+}
+
 const db = new Database(DB_PATH);
 
 // Enable WAL for better concurrent performance
@@ -361,7 +371,7 @@ export function insertReminder(
   task: string,
   scheduledAtUtc: string,
 ): string {
-  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const id = DateTime.now().toMillis().toString(36) + Math.random().toString(36).slice(2, 6);
 
   // Ensure a plan exists for FK constraint
   db.prepare(`

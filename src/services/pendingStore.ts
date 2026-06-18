@@ -1,6 +1,7 @@
 import { AnalysisResult, TodoItem, TaskSource } from '../types/analysis.js';
 import { Conflict } from './planStore.js';
 import { v4 as uuidv4 } from 'uuid';
+import { DateTime } from 'luxon';
 
 export interface PendingVoiceNote {
   id: string;
@@ -53,7 +54,7 @@ export function savePending(data: Omit<PendingVoiceNote, 'id' | 'createdAt'>): s
   const pending: PendingVoiceNote = {
     ...data,
     id,
-    createdAt: Date.now(),
+    createdAt: DateTime.now().toMillis(),
   };
   
   // Replace any existing pending note for this user
@@ -107,7 +108,7 @@ export interface AwaitingVoiceState {
 const chatAwaitingVoice = new Map<number, AwaitingVoiceState>();
 
 export function setAwaitingImageFollowup(userId: number, chatId: number, imageData: any) {
-  const expiresAt = Date.now() + 10 * 60 * 1000;
+  const expiresAt = DateTime.now().toMillis() + 10 * 60 * 1000;
   userFlows.set(userId, {
     type: 'awaiting_image_followup',
     chatId,
@@ -120,7 +121,7 @@ export function setAwaitingImageFollowup(userId: number, chatId: number, imageDa
 export function isAwaitingVoiceFollowup(chatId: number): boolean {
   const state = chatAwaitingVoice.get(chatId);
   if (!state) return false;
-  if (Date.now() > state.expiresAt) {
+  if (DateTime.now().toMillis() > state.expiresAt) {
     chatAwaitingVoice.delete(chatId);
     return false;
   }
@@ -130,7 +131,7 @@ export function isAwaitingVoiceFollowup(chatId: number): boolean {
 export function getAwaitingVoiceFollowup(chatId: number): AwaitingVoiceState | undefined {
   const state = chatAwaitingVoice.get(chatId);
   if (!state) return undefined;
-  if (Date.now() > state.expiresAt) {
+  if (DateTime.now().toMillis() > state.expiresAt) {
     chatAwaitingVoice.delete(chatId);
     return undefined;
   }
@@ -140,7 +141,7 @@ export function getAwaitingVoiceFollowup(chatId: number): AwaitingVoiceState | u
 export function getAwaitingImageFollowup(userId: number): { imageData: any; chatId?: number } | undefined {
   const state = userFlows.get(userId);
   if (state && state.type === 'awaiting_image_followup') {
-    if (Date.now() > state.expiresAt) {
+    if (DateTime.now().toMillis() > state.expiresAt) {
       userFlows.delete(userId);
       chatAwaitingVoice.delete(state.chatId);
       return undefined;
@@ -193,7 +194,7 @@ export function setRescheduleState(userId: number, state: RescheduleState) {
 
 export function getRescheduleState(userId: number): RescheduleState | undefined {
   const state = rescheduleStates.get(userId);
-  if (state && Date.now() - state.createdAt > 5 * 60 * 1000) {
+  if (state && DateTime.now().toMillis() - state.createdAt > 5 * 60 * 1000) {
     rescheduleStates.delete(userId);
     return undefined;
   }
@@ -206,7 +207,7 @@ export function clearRescheduleState(userId: number) {
 
 // Cleanup task (runs every minute)
 setInterval(() => {
-  const now = Date.now();
+  const now = DateTime.now().toMillis();
   for (const [id, note] of pendingNotes.entries()) {
     if (now - note.createdAt > 10 * 60 * 1000) { // 10 minutes
       pendingNotes.delete(id);

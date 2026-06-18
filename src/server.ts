@@ -9,8 +9,11 @@ import { rescheduleReminder, updateReminderOffsets, cancelReminderByTaskId } fro
 import { logger } from './logger.js';
 import { deleteMemoryEntry, clearAllMemory, getUserMemory } from './services/memoryStore.js';
 import { db } from './services/db.js';
+import { DateTime } from 'luxon';
 
-let startTime = Date.now();
+const KZ_ZONE = 'Asia/Almaty';
+
+let startTime = DateTime.now().toMillis();
 
 export function createServer(bot?: Bot) {
   const app = express();
@@ -20,13 +23,13 @@ export function createServer(bot?: Bot) {
 
   // Request logging
   app.use((req, res, next) => {
-    const start = Date.now();
+    const start = DateTime.now().toMillis();
     res.on('finish', () => {
       logger.info({
         method: req.method,
         path: req.path,
         status: res.statusCode,
-        duration: Date.now() - start,
+        duration: DateTime.now().toMillis() - start,
         ip: req.ip,
       }, 'HTTP request');
     });
@@ -58,8 +61,8 @@ export function createServer(bot?: Bot) {
     res.json({
       status: 'ok',
       userCount,
-      uptime: Math.floor((Date.now() - startTime) / 1000),
-      timestamp: new Date().toISOString(),
+      uptime: Math.floor((DateTime.now().toMillis() - startTime) / 1000),
+      timestamp: DateTime.now().setZone(KZ_ZONE).toUTC().toISO(),
     });
   });
 
@@ -284,5 +287,5 @@ export function createServer(bot?: Bot) {
 }
 
 export function resetStartTime() {
-  startTime = Date.now();
+  startTime = DateTime.now().toMillis();
 }

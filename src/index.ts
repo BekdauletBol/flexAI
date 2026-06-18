@@ -36,6 +36,9 @@ import {
 } from "./services/reporter.js";
 import { geocodeCity } from "./services/location.js";
 import { generateReportPdf } from "./services/pdf.js";
+import { DateTime } from 'luxon';
+
+const KZ_ZONE = 'Asia/Almaty';
 
 import {
   getNavKeyboard,
@@ -194,7 +197,7 @@ const RATE_LIMIT = 30;
 const RATE_WINDOW = 60_000;
 
 function checkRateLimit(userId: number): boolean {
-  const now = Date.now();
+  const now = DateTime.now().toMillis();
   const windowStart = now - RATE_WINDOW;
   let timestamps = userRequests.get(userId) || [];
   timestamps = timestamps.filter((t) => t > windowStart);
@@ -207,7 +210,7 @@ function checkRateLimit(userId: number): boolean {
 // Request logging middleware
 
 bot.use(async (ctx, next) => {
-  const start = Date.now();
+  const start = DateTime.now().toMillis();
   const userId = ctx.from?.id ?? 0;
   const type = ctx.message?.voice
     ? "voice"
@@ -221,7 +224,7 @@ bot.use(async (ctx, next) => {
     {
       userId,
       type,
-      duration: Date.now() - start,
+      duration: DateTime.now().toMillis() - start,
       updateId: ctx.update.update_id,
     },
     "Update processed",
@@ -360,7 +363,7 @@ bot.command("report", async (ctx) => {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
     } catch {}
 
-    const fn = `report_${userId}_${Date.now()}.pdf`;
+    const fn = `report_${userId}_${DateTime.now().toMillis()}.pdf`;
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), {
       caption: "Report",
       reply_markup: getNavKeyboard(lang),
@@ -396,7 +399,7 @@ bot.command("weekly", async (ctx) => {
       await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
     } catch {}
 
-    const fn = `weekly_${userId}_${Date.now()}.pdf`;
+    const fn = `weekly_${userId}_${DateTime.now().toMillis()}.pdf`;
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), {
       caption: "Weekly Report",
       reply_markup: getNavKeyboard(lang),
@@ -508,7 +511,7 @@ bot.command("stats", async (ctx) => {
     db.prepare("SELECT COUNT(*) as c FROM todos").get() as { c: number }
   ).c;
   const queueStats = getQueueStats();
-  const uptime = Math.floor((Date.now() - process.uptime() * 1000) / 1000);
+  const uptime = Math.floor((DateTime.now().toMillis() - process.uptime() * 1000) / 1000);
   await ctx.reply(
     `📊 STATS\n\nUsers: ${userCount} / ${config.maxUsers}\nTasks: ${todoCount}\nQueue: ${queueStats.size} waiting, ${queueStats.pending} pending\nUptime: ${uptime}s`,
   );
@@ -590,7 +593,7 @@ bot.callbackQuery("nav_report", async (ctx) => {
         ? `OVERDUE:\n${overdue.map((t) => `— ${t.task}`).join("\n")}`
         : undefined;
     const pdfBuf = await generateReportPdf(tasks, lang, summary ? { summary } : undefined);
-    const fn = `report_${userId}_${Date.now()}.pdf`;
+    const fn = `report_${userId}_${DateTime.now().toMillis()}.pdf`;
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), {
       caption: "Report",
       reply_markup: getNavKeyboard(lang),
@@ -619,7 +622,7 @@ bot.callbackQuery("nav_weekly", async (ctx) => {
     try {
       await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
     } catch {}
-    const fn = `weekly_${userId}_${Date.now()}.pdf`;
+    const fn = `weekly_${userId}_${DateTime.now().toMillis()}.pdf`;
     await ctx.replyWithDocument(new InputFile(pdfBuf, fn), {
       caption: "Weekly Report",
       reply_markup: getNavKeyboard(lang),
@@ -823,13 +826,13 @@ bot.callbackQuery(/^conflict_reschedule_idx_(.+)_(\d+)$/, async (ctx) => {
   setRescheduleState(ctx.from.id, {
     taskId: task.id!,
     taskName: task.task,
-    currentDate: task.date || new Date().toISOString().substring(0, 10),
+    currentDate: task.date || getKzToday(),
     currentTime: task.time || "09:00",
     pendingId,
     conflictIndex,
     chatId: ctx.chat!.id,
     lang,
-    createdAt: Date.now(),
+    createdAt: DateTime.now().toMillis(),
   });
 
   const dateMsg = buildRescheduleDatePicker(task.task, lang);
@@ -912,7 +915,7 @@ bot.callbackQuery(/^rs_d_(today|tomorrow|plus2|custom)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
 
   const option = ctx.match[1];
-  const now = new Date();
+  const now = DateTime.now().setZone(KZ_ZONE);
 
   if (option === "custom") {
     const prompt =
@@ -930,23 +933,15 @@ bot.callbackQuery(/^rs_d_(today|tomorrow|plus2|custom)$/, async (ctx) => {
     return;
   }
 
-  let dateObj: Date;
-  if (option === "today") dateObj = now;
-  else if (option === "tomorrow") {
-    dateObj = new Date(now);
-    dateObj.setDate(dateObj.getDate() + 1);
-  } else {
-    dateObj = new Date(now);
-    dateObj.setDate(dateObj.getDate() + 2);
-  }
+  let dateDt: DateTime;
+  if (option === "today") dateDt = now;
+  else if (option === "tomorrow") dateDt = now.plus({ days: 1 });
+  else dateDt = now.plus({ days: 2 });
 
-  const dateStr = dateObj.toISOString().substring(0, 10);
+  const dateStr = dateDt.toFormat('yyyy-MM-dd');
   state.selectedDate = dateStr;
 
-  const dateLabel = dateObj.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-  });
+  const dateLabel = dateDt.toFormat('MMM d');
   const timeMsg = buildRescheduleTimePicker(
     state.taskName,
     dateLabel,
@@ -1322,14 +1317,12 @@ bot.callbackQuery(/^snz_(\d+|tmrw|done)_(.+)$/, async (ctx) => {
   let snoozedUntilStr: string | null = null;
 
   if (action === "tmrw") {
-    const tomorrow9am = new Date();
-    tomorrow9am.setDate(tomorrow9am.getDate() + 1);
-    tomorrow9am.setHours(9, 0, 0, 0);
-    minutes = Math.round((tomorrow9am.getTime() - Date.now()) / 60000);
-    snoozedUntilStr = tomorrow9am.toISOString();
+    const tomorrow9am = DateTime.now().setZone(KZ_ZONE).plus({ days: 1 }).set({ hour: 9, minute: 0, second: 0, millisecond: 0 });
+    minutes = Math.round((tomorrow9am.toMillis() - DateTime.now().toMillis()) / 60000);
+    snoozedUntilStr = tomorrow9am.toUTC().toISO();
   } else {
     minutes = parseInt(action, 10);
-    snoozedUntilStr = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+    snoozedUntilStr = DateTime.now().plus({ minutes }).toUTC().toISO();
   }
 
   const reminder =
@@ -1394,7 +1387,7 @@ bot.callbackQuery(/^img_add_all_(\d+)$/, async (ctx) => {
 
   const { tasks } = data;
   const todos = tasks.map((t) => ({
-    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    id: DateTime.now().toMillis().toString(36) + Math.random().toString(36).slice(2, 6),
     task: t.task,
     priority: (["high", "medium", "low"].includes(t.priority)
       ? t.priority
@@ -1755,7 +1748,7 @@ bot.on("message:voice", async (ctx) => {
   const userId = ctx.from?.id ?? 0;
   await ctx.reply("Processing");
   await voiceQueue.add(async () => {
-    const start = Date.now();
+    const start = DateTime.now().toMillis();
     try {
       await handleVoice(ctx);
     } catch (err) {
@@ -1768,7 +1761,7 @@ bot.on("message:voice", async (ctx) => {
       } catch {}
     } finally {
       logger.info(
-        { userId, type: "voice", duration: Date.now() - start },
+        { userId, type: "voice", duration: DateTime.now().toMillis() - start },
         "Voice processed",
       );
     }
@@ -1807,18 +1800,15 @@ bot.on("message:text", async (ctx) => {
         const day = match[1].padStart(2, "0");
         const month = match[2].padStart(2, "0");
         let year = match[3];
-        if (!year) year = String(new Date().getFullYear());
+        if (!year) year = String(DateTime.now().setZone(KZ_ZONE).year);
         else if (year.length === 2) year = "20" + year;
         const dateStr = `${year}-${month}-${day}`;
         state.selectedDate = dateStr;
 
         clearUserFlowState(userId);
 
-        const dateObj = new Date(dateStr + "T12:00:00");
-        const dateLabel = dateObj.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        });
+        const dateDt = DateTime.fromISO(dateStr, { zone: KZ_ZONE });
+        const dateLabel = dateDt.toFormat('MMM d');
         const timeMsg = buildRescheduleTimePicker(
           state.taskName,
           dateLabel,

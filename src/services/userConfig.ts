@@ -1,5 +1,6 @@
 import { logger } from '../logger.js';
 import * as db from './db.js';
+import { DateTime } from 'luxon';
 
 const DEFAULT_TIMEZONE = 'Asia/Almaty';
 
@@ -32,28 +33,11 @@ export function getTemporalContext(userId: number): {
   timezone: string;
 } {
   const tz = getUserTimezone(userId);
-  const now = new Date();
+  const now = DateTime.now().setZone(tz);
 
-  const utcISO = now.toISOString();
-
-  // Format local time using Intl
-  const localStr = now.toLocaleString('en-US', {
-    timeZone: tz,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-
-  // Parse back: "MM/DD/YYYY, HH:MM:SS" → components
-  const [datePart, timePart] = localStr.split(', ');
-  const [month, day, year] = datePart.split('/');
-  const localDate = `${year}-${month}-${day}`;
-  const localTime = timePart.substring(0, 5); // "HH:MM"
-
+  const utcISO = now.toUTC().toISO()!;
+  const localDate = now.toFormat('yyyy-MM-dd');
+  const localTime = now.toFormat('HH:mm');
   const localISO = `${localDate}T${localTime}:00`;
 
   return { utcISO, localISO, localDate, localTime, timezone: tz };
@@ -85,4 +69,37 @@ export function setUserLocation(userId: number, city: string, lat: number, lng: 
 export function setReminderOffset(userId: number, minutes: number) {
   db.upsertUser(userId, { reminder_offset_minutes: minutes });
   logger.info(`[UserConfig] Reminder offset set for ${userId}: ${minutes} min`);
+}
+
+/**
+ * Returns a luxon DateTime in the user's local timezone from temporal context.
+ * Use this instead of `new Date(temporal.localISO)`.
+ */
+export function getLocalDateTime(userId: number): DateTime {
+  const tz = getUserTimezone(userId);
+  return DateTime.now().setZone(tz);
+}
+
+/**
+ * Returns formatted date parts for LLM prompts (weekday, monthDay, year).
+ * Replaces the pattern: `new Date(temporal.localISO).toLocaleDateString(...)`.
+ */
+export function getTemporalPromptParts(userId: number): {
+  dayOfWeek: string;
+  monthDay: string;
+  year: number;
+  localTime: string;
+  localDate: string;
+  timezone: string;
+} {
+  const temporal = getTemporalContext(userId);
+  const dt = DateTime.fromISO(temporal.localISO, { zone: temporal.timezone });
+  return {
+    dayOfWeek: dt.toFormat('cccc'),         // "Monday"
+    monthDay: dt.toFormat('MMMM d'),         // "January 15"
+    year: dt.year,
+    localTime: temporal.localTime,
+    localDate: temporal.localDate,
+    timezone: temporal.timezone,
+  };
 }

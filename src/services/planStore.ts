@@ -480,7 +480,7 @@ export function getAllPlansForLLM(userId: number): string {
 export function addTodoToPlan(chatId: number, userId: number, task: string, time: string, priority: string, date: string, source: TaskSource = 'manual'): TodoItem {
   const todoDate = date || getKzToday();
   const todo: TodoItem = {
-    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    id: DateTime.now().toMillis().toString(36) + Math.random().toString(36).slice(2, 6),
     task,
     time: time || undefined,
     priority: (priority as 'high' | 'medium' | 'low') || 'medium',
