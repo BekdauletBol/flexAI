@@ -1346,6 +1346,68 @@ bot.callbackQuery(/^conflict_skip_(.+)$/, async (ctx) => {
   await startDeliveryFlow(ctx, pending);
 });
 
+// ─── Image/Teams conflict resolution callbacks ─────────────────────────────
+
+bot.callbackQuery(/^conflict_keep_teams:(.+):(.+)$/, async (ctx) => {
+  const newId = ctx.match[1];
+  const existingId = ctx.match[2];
+  const { resolveConflict } = await import("./services/db.js");
+
+  // Keep the Teams task (new), delete the existing one
+  resolveConflict(newId, existingId);
+
+  await ctx.answerCallbackQuery();
+  if (ctx.callbackQuery.message) {
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        ctx.callbackQuery.message.message_id,
+        "✅ Оставлена задача из Teams. Существующая удалена.",
+      );
+    } catch {}
+  }
+});
+
+bot.callbackQuery(/^conflict_keep_mine:(.+):(.+)$/, async (ctx) => {
+  const newId = ctx.match[1];
+  const existingId = ctx.match[2];
+  const { resolveConflict } = await import("./services/db.js");
+
+  // Keep the existing task, delete the Teams one
+  resolveConflict(existingId, newId);
+
+  await ctx.answerCallbackQuery();
+  if (ctx.callbackQuery.message) {
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        ctx.callbackQuery.message.message_id,
+        "✅ Оставлена существующая задача. Teams задача удалена.",
+      );
+    } catch {}
+  }
+});
+
+bot.callbackQuery(/^conflict_keep_both:(.+):(.+)$/, async (ctx) => {
+  const newId = ctx.match[1];
+  const existingId = ctx.match[2];
+  const { markConflict } = await import("./services/db.js");
+
+  // Keep both, mark as conflicting
+  markConflict(newId, existingId);
+
+  await ctx.answerCallbackQuery();
+  if (ctx.callbackQuery.message) {
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        ctx.callbackQuery.message.message_id,
+        "✅ ⚠️ Обе задачи сохранены с пометкой о конфликте.",
+      );
+    } catch {}
+  }
+});
+
 bot.callbackQuery(/^srem_(10|30|60|none|custom)_(.+)$/, async (ctx) => {
   const action = ctx.match[1];
   const pendingId = ctx.match[2];

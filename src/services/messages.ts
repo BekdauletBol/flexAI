@@ -32,7 +32,7 @@ export function formatTimeKz(isoStr: string | null | undefined): string {
 /** Get localized source label */
 export function sourceLabel(source: TaskSource | string | undefined, lang: string): string {
   if (lang === 'ru') {
-    if (source === 'voice') return 'голос';
+    if (source === 'voice' || source === 'telegram') return 'голос';
     if (source === 'teams') return 'Teams';
     if (source === 'manual') return 'вручную';
     return 'telegram';

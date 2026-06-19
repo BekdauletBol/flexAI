@@ -2,11 +2,12 @@ import { Context, InlineKeyboard } from "grammy";
 import OpenAI from "openai";
 import { config } from "../config.js";
 import { TaskSource } from "../types/analysis.js";
-import { getUserTasks } from "../services/planStore.js";
+import { getUserTasks, compareAndSaveImageTasks } from "../services/planStore.js";
 import { getUserConfig } from "../services/userConfig.js";
 import { logger } from "../logger.js";
 import { setAwaitingImageFollowup, clearAwaitingImageFollowup } from "../services/pendingStore.js";
 import { DateTime } from 'luxon';
+import { v4 as uuid } from 'uuid';
 
 const KZ_ZONE = 'Asia/Almaty';
 
@@ -154,6 +155,50 @@ export async function handleImage(ctx: Context) {
     // Build and send the full schedule analysis message
     const message = buildAnalysisMessage(analysis, existingTasks, lang);
 
+    // ── Conflict detection and resolution ──
+    // Convert extracted events to TodoItems for comparison
+    const date = analysis.detected_date || DateTime.now().setZone(KZ_ZONE).toISODate()!;
+    const eventTodos = analysis.events.map((e: ExtractedTask) => ({
+      id: '',
+      task: e.task,
+      priority: (['high', 'medium', 'low'].includes(e.priority) ? e.priority : 'medium') as any,
+      done: false,
+      time: e.time || undefined,
+      date: e.date || date,
+      duration: e.duration_minutes || 30,
+      location: undefined,
+      source: 'teams' as any,
+    }));
+
+    // Save non-conflicting tasks immediately, collect conflicts
+    const conflicts = compareAndSaveImageTasks(ctx.chat!.id, userId, eventTodos, date);
+
+    if (conflicts.length > 0) {
+      // Show the analysis message first, then show conflict resolution
+      await ctx.reply(message);
+
+      // Send one message per conflict with inline buttons
+      for (const pair of conflicts) {
+        const conflictMsg = lang === 'ru'
+          ? `⚠️ КОНФЛИКТ ВРЕМЕНИ\n\nНовая задача: ${pair.newTask.task} (${pair.newTask.time})\nСуществующая: ${pair.existingTask.task} (${pair.existingTask.time})\n\nЧто делаем?`
+          : lang === 'kk'
+            ? `⚠️ УАҚЫТ ҚАЙШЫЛЫҒЫ\n\nЖаңа тапсырма: ${pair.newTask.task} (${pair.newTask.time})\nБар тапсырма: ${pair.existingTask.task} (${pair.existingTask.time})\n\nНе істейміз?`
+            : `⚠️ TIME CONFLICT\n\nNew: ${pair.newTask.task} (${pair.newTask.time})\nExisting: ${pair.existingTask.task} (${pair.existingTask.time})\n\nWhat now?`;
+
+        const conflictKb = new InlineKeyboard()
+          .text(lang === 'ru' ? 'Оставить Teams' : lang === 'kk' ? 'Teams қалдыру' : 'Keep Teams',
+            `conflict_keep_teams:${pair.newTask.id}:${pair.existingTask.id}`)
+          .text(lang === 'ru' ? 'Оставить мою' : lang === 'kk' ? 'Менікін қалдыру' : 'Keep mine',
+            `conflict_keep_mine:${pair.newTask.id}:${pair.existingTask.id}`)
+          .row()
+          .text(lang === 'ru' ? 'Оставить обе ⚠️' : lang === 'kk' ? 'Екеуін де қалдыру ⚠️' : 'Keep both ⚠️',
+            `conflict_keep_both:${pair.newTask.id}:${pair.existingTask.id}`);
+
+        await ctx.reply(conflictMsg, { reply_markup: conflictKb });
+      }
+    }
+
+    // Build keyboard for the main analysis message (or just the keyboard if no conflicts)
     const keyboard = new InlineKeyboard()
       .text(
         lang === "ru"

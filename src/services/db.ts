@@ -68,6 +68,7 @@ db.exec(`
     source TEXT CHECK(source IN ('teams','telegram','voice','manual')),
     completed_at TEXT,
     snoozed_until TEXT,
+    has_conflict INTEGER DEFAULT 0,
     PRIMARY KEY (id),
     FOREIGN KEY (chat_id, user_id) REFERENCES plans(chat_id, user_id)
   );
@@ -86,6 +87,7 @@ try { db.exec('ALTER TABLE todos ADD COLUMN parent_task_id TEXT DEFAULT NULL'); 
 try { db.exec('ALTER TABLE todos ADD COLUMN reminder_minutes INTEGER DEFAULT NULL'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN notified INTEGER DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN explicitly_set INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN has_conflict INTEGER DEFAULT 0'); } catch {}
 
 // Backfill scheduled_time_kz from date + time for existing rows
 try {
@@ -732,4 +734,15 @@ export function updateLinkedReminders(parentTaskId: string, newScheduledAtUtc: s
       AND notified = 0
   `).run(newScheduledAtUtc, newScheduledAtUtc.substring(0, 10), parentTaskId);
   logger.debug(`[DB] Updated linked reminders for parent task ${parentTaskId} → ${newScheduledAtUtc}`);
+}
+
+/** Mark two tasks as conflicting — set has_conflict = 1 on both */
+export function markConflict(idA: string, idB: string) {
+  db.prepare('UPDATE todos SET has_conflict = 1 WHERE id IN (?, ?)').run(idA, idB);
+}
+
+/** Resolve a conflict: keep one task (set has_conflict = 0), delete the other */
+export function resolveConflict(keepId: string, deleteId: string) {
+  db.prepare('UPDATE todos SET has_conflict = 0 WHERE id = ?').run(keepId);
+  db.prepare('DELETE FROM todos WHERE id = ?').run(deleteId);
 }

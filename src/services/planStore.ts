@@ -2,6 +2,7 @@ import { AnalysisResult, TodoItem, TimeFrame, TaskSource } from '../types/analys
 import { db, DB_PATH, detectTimeConflicts, getTasksForDate, getTaskTimeRange, insertReminder } from './db.js';
 import { kzLocalToUTC, utcToKzLocalDate, getKzToday, getKzTomorrow } from '../utils/timezone.js';
 import { DateTime } from 'luxon';
+import { v4 as uuid } from 'uuid';
 import { logger } from '../logger.js';
 export { detectTimeConflicts, getKzToday, getKzTomorrow };
 
@@ -844,4 +845,90 @@ export function getPlanForWebApp(chatId: number) {
     periodStart: plan.periodStart,
     periodEnd: plan.periodEnd,
   };
+}
+
+interface ConflictPair {
+  newTask: TodoItem;
+  existingTask: TodoItem;
+}
+
+/**
+ * Compare incoming image tasks against existing tasks for a date.
+ * Inserts non-conflicting tasks immediately, returns conflicts for UI resolution.
+ */
+export function compareAndSaveImageTasks(
+  chatId: number,
+  userId: number,
+  newTasks: TodoItem[],
+  date: string,
+): ConflictPair[] {
+  // Load existing tasks for this date (exclude reminders — already filtered by getTasksFiltered)
+  const existingTasks = getTasksFiltered(userId, { date, includeDone: true })
+    .filter(t => !t.done);
+
+  const conflicts: ConflictPair[] = [];
+  const cleanTasks: TodoItem[] = [];
+
+  for (const todo of newTasks) {
+    // Assign UUID if not set
+    if (!todo.id) todo.id = uuid();
+
+    if (!todo.time) {
+      cleanTasks.push(todo);
+      continue;
+    }
+
+    const newStart = timeToMinutes(todo.time);
+    const newEnd = newStart + (todo.duration || 30);
+
+    // Check against existing DB tasks
+    let hasConflict = false;
+    for (const existing of existingTasks) {
+      if (!existing.time) continue;
+      const exStart = timeToMinutes(existing.time);
+      const exEnd = exStart + (existing.duration || 30);
+
+      if (newStart < exEnd && newEnd > exStart) {
+        conflicts.push({ newTask: todo, existingTask: existing });
+        hasConflict = true;
+        break;
+      }
+    }
+
+    // Also check against already-accepted clean tasks in this batch
+    if (!hasConflict) {
+      for (const accepted of cleanTasks) {
+        if (!accepted.time) continue;
+        const acStart = timeToMinutes(accepted.time);
+        const acEnd = acStart + (accepted.duration || 30);
+        if (newStart < acEnd && newEnd > acStart) {
+          // Same-batch conflict — skip this one, already-inserted wins
+          hasConflict = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasConflict) {
+      cleanTasks.push(todo);
+    }
+  }
+
+  // Insert non-conflicting tasks
+  if (cleanTasks.length > 0) {
+    const analysis: AnalysisResult = {
+      intent: 'action',
+      title: `From screenshot — ${date}`,
+      summary: `Added ${cleanTasks.length} tasks from screenshot.`,
+      key_points: [],
+      todos: cleanTasks,
+      tags: ['#screenshot'],
+      raw_transcript: '',
+      language: 'ru',
+      timeframe: 'day',
+    };
+    savePlan(chatId, userId, analysis, 'teams');
+  }
+
+  return conflicts;
 }

@@ -72,6 +72,7 @@ interface TaskRow {
   source: string | null;
   datetime: string | null;
   scheduled_time_kz: string | null;
+  has_conflict: number;
 }
 
 function queryTasksForDate(userId: number, dateStr: string): TaskRow[] {
@@ -231,7 +232,9 @@ export async function generateDailyReportPdf(userId: number, dateStr: string, la
         // Task name
         const taskStyle = task.done ? 'Italic' : 'Regular';
         doc.font(taskStyle as any).fontSize(13).fillColor(task.done ? TEXT_SEC : TEXT_PRI);
-        doc.text(task.task, 80, y + 16, { width: CW - (80 - M) - 90 });
+        const taskPrefix = task.has_conflict ? '⚠️ ' : '';
+        const srcLabel = task.source === 'teams' ? '  [Teams]' : (task.source === 'voice' || task.source === 'telegram') ? '  [Voice]' : task.source === 'manual' ? '  [Manual]' : '';
+        doc.text(`${taskPrefix}${task.task}${srcLabel}`, 80, y + 16, { width: CW - (80 - M) - 90 });
 
         // Location if present
         if (task.location) {
@@ -386,7 +389,9 @@ export async function generateRangeReportPdf(
 
         doc.font(task.done ? 'Italic' : 'Regular').fontSize(12).fillColor(task.done ? TEXT_SEC : TEXT_PRI);
         const textX = task.time ? M + 50 : M + 18;
-        doc.text(task.task, textX, y + 1, { width: CW - (textX - M) - 80 });
+        const taskPrefix = task.has_conflict ? '⚠️ ' : '';
+        const srcLabel = task.source === 'teams' ? '  [Teams]' : (task.source === 'voice' || task.source === 'telegram') ? '  [Voice]' : task.source === 'manual' ? '  [Manual]' : '';
+        doc.text(`${taskPrefix}${task.task}${srcLabel}`, textX, y + 1, { width: CW - (textX - M) - 80 });
 
         y += 26;
       }
@@ -478,7 +483,9 @@ export async function generateFullReportPdf(userId: number, lang: string = 'ru')
 
         doc.font(task.done ? 'Italic' : 'Regular').fontSize(12).fillColor(task.done ? TEXT_SEC : TEXT_PRI);
         const textX = task.time ? M + 50 : M + 18;
-        doc.text(task.task, textX, y + 1, { width: CW - (textX - M) - 80 });
+        const taskPrefix = task.has_conflict ? '⚠️ ' : '';
+        const srcLabel = task.source === 'teams' ? '  [Teams]' : (task.source === 'voice' || task.source === 'telegram') ? '  [Voice]' : task.source === 'manual' ? '  [Manual]' : '';
+        doc.text(`${taskPrefix}${task.task}${srcLabel}`, textX, y + 1, { width: CW - (textX - M) - 80 });
 
         y += 26;
       }
