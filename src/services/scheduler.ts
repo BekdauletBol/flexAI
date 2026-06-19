@@ -226,6 +226,12 @@ async function checkReminders() {
   const nowUtc = DateTime.now().toUTC().toISO()!;
   const { db } = await import('../services/db.js');
 
+  // Check if rate-limited users can recover (GitHub Models daily reset)
+  try {
+    const { checkRateLimitRecovery } = await import('./rateLimitStore.js');
+    await checkRateLimitRecovery(bot);
+  } catch {}
+
   // Query DB for due, un-notified, non-done reminders
   const dueRows = db.prepare(`
     SELECT id, chat_id, user_id, task, datetime, location, source

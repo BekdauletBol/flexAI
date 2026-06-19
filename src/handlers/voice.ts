@@ -897,12 +897,18 @@ export async function handleVoice(ctx: Context) {
     logger.error("[Voice] Error: %s", error);
     const msg = error instanceof Error ? error.message : "";
     try {
-      if (msg.includes("Failed to transcribe")) {
-        await ctx.api.editMessageText(
-          ctx.chat!.id,
-          statusMsg.message_id,
-          "Could not recognize speech.",
-        );
+      if (msg.includes("Failed to transcribe") || msg.includes("rate limit") || msg.includes("429")) {
+        if (msg.includes("rate limit") || msg.includes("429")) {
+          const { handleRateLimit } = await import('../services/rateLimitStore.js');
+          const limitMsg = handleRateLimit(error, ctx.chat!.id, userId, 'whisper');
+          await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, limitMsg);
+        } else {
+          await ctx.api.editMessageText(
+            ctx.chat!.id,
+            statusMsg.message_id,
+            "Could not recognize speech.",
+          );
+        }
       } else if (msg.startsWith("TRANSCRIPT_FALLBACK:")) {
         const t = msg.substring("TRANSCRIPT_FALLBACK:".length);
         const text = t.length > 3900 ? t.substring(0, 3900) + "..." : t;
@@ -911,6 +917,10 @@ export async function handleVoice(ctx: Context) {
           statusMsg.message_id,
           `Analysis failed. Transcript:\n\n${text}`,
         );
+      } else if (msg.includes("rate limit") || msg.includes("429") || msg.includes("Too Many Requests") || msg.includes("limit")) {
+        const { handleRateLimit } = await import('../services/rateLimitStore.js');
+        const limitMsg = handleRateLimit(error, ctx.chat!.id, userId, 'analysis');
+        await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, limitMsg);
       } else {
         await ctx.api.editMessageText(
           ctx.chat!.id,
