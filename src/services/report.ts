@@ -80,6 +80,7 @@ function queryTasksForDate(userId: number, dateStr: string): TaskRow[] {
   const stmt = db.prepare(`
     SELECT DISTINCT * FROM todos
     WHERE user_id = ?
+      AND (is_reminder IS NULL OR is_reminder = 0)
       AND (
         date = ?
         OR substr(COALESCE(scheduled_time_kz, date || 'T' || COALESCE(time, '00:00')), 1, 10) = ?
@@ -123,6 +124,9 @@ export async function generateDailyReportPdf(userId: number, dateStr: string, la
   const labels = getLabels(lang);
   const fonts = getFonts();
   const tasks = queryTasksForDate(userId, dateStr);
+  const timed = tasks.filter(t => t.time);
+  const untimed = tasks.filter(t => !t.time);
+  console.log('[DailyReport] Rows from DB:', tasks.length, '| Timed:', timed.length, '| Untimed:', untimed.length);
   const allTasks = tasks;
 
   const pending = allTasks.filter(t => !t.done);
@@ -300,6 +304,7 @@ export async function generateRangeReportPdf(
   const stmt = db.prepare(`
     SELECT DISTINCT * FROM todos
     WHERE user_id = ?
+      AND (is_reminder IS NULL OR is_reminder = 0)
       AND substr(COALESCE(scheduled_time_kz, date || 'T' || COALESCE(time, '00:00')), 1, 10) >= ?
       AND substr(COALESCE(scheduled_time_kz, date || 'T' || COALESCE(time, '00:00')), 1, 10) <= ?
     ORDER BY date ASC, time ASC

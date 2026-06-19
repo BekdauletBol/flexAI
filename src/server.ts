@@ -139,9 +139,14 @@ export function createServer(bot?: Bot) {
       res.status(400).json({ error: 'Missing chatId, userId, or task' });
       return;
     }
-    const todo = addTodoToPlan(Number(chatId), Number(userId), task, time || '', priority || 'medium', date || '', 'manual');
-    logger.info({ userId, task: todo.task }, 'Task created via API');
-    res.json({ success: true, todo });
+    const result = addTodoToPlan(Number(chatId), Number(userId), task, time || '', priority || 'medium', date || '', 'manual');
+    if ('conflict' in result) {
+      // Conflict detected — return conflict info instead of saving
+      res.json({ success: false, conflict: result.conflict, pendingTodo: result.pendingTodo });
+      return;
+    }
+    logger.info({ userId, task: result.task }, 'Task created via API');
+    res.json({ success: true, todo: result });
   });
 
   app.post('/api/plans/delete', (req, res) => {

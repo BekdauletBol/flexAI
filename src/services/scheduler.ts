@@ -1,8 +1,6 @@
 import { logger } from '../logger.js';
 import { Bot, InlineKeyboard } from 'grammy';
 import { TodoItem } from '../types/analysis.js';
-import { getUserConfig } from './userConfig.js';
-import { getPlan } from './planStore.js';
 import { DateTime } from 'luxon';
 import {
   kzLocalToUTC,
@@ -90,8 +88,6 @@ export function formatReminderConfirmation(todos: TodoItem[], offsetMinutes: num
 export function scheduleReminders(chatId: number, userId: number, todos: TodoItem[], language: string, overrideOffset?: number) {
   const kzNow = nowKZ();
   const nowMs = kzNow.toMillis();
-  const userSettings = getUserConfig(userId);
-  const offset = overrideOffset !== undefined ? overrideOffset : (userSettings.reminder_offset_minutes || 30);
 
   for (const todo of todos) {
     const eventTime = getEventTime(todo);
@@ -99,6 +95,20 @@ export function scheduleReminders(chatId: number, userId: number, todos: TodoIte
 
     if (eventTime.toMillis() < nowMs) {
       logger.info(`[Scheduler] Skipped "${todo.task}" at ${todo.datetime || todo.time} — already passed`);
+      continue;
+    }
+
+    // Determine offset: priority 1) explicit override 2) task reminder_minutes
+    let offset: number | null = null;
+
+    if (overrideOffset !== undefined) {
+      offset = overrideOffset;
+    } else if (todo.reminder_minutes && todo.reminder_minutes > 0) {
+      offset = todo.reminder_minutes;
+    }
+
+    if (offset === null) {
+      logger.info(`[Scheduler] No reminder configured for: "${todo.task}" — skipping`);
       continue;
     }
 
@@ -176,15 +186,14 @@ export function rescheduleReminder(chatId: number, taskId: string, task: string,
 }
 
 export function updateReminderOffsets(chatId: number, offsetMinutes: number) {
-  const now = DateTime.now().toMillis();
-  for (const r of reminders) {
-    if (r.chatId === chatId && !r.notified) {
-      // If we don't have the original event time easily available here,
-      // we just nudge it. But ideally we'd recompute.
-      // For now, nudge:
-      r.triggerAt = now + 5000;
-    }
-  }
+  // Only update reminders that were NOT explicitly set by the user
+  // UserConfig offset changes never touch rows where explicitly_set = 1
+  const { db } = require('../services/db.js');
+  db.prepare(`
+    UPDATE todos
+    SET datetime = datetime(datetime, '+' || ? || ' minutes')
+    WHERE chat_id = ? AND is_reminder = 1 AND notified = 0 AND done = 0 AND explicitly_set = 0
+  `).run(offsetMinutes, chatId);
 }
 
 export function snoozeReminder(taskId: string, minutes: number) {
@@ -214,57 +223,64 @@ export function snoozeReminderUntilMorning(taskId: string, language: string) {
 
 async function checkReminders() {
   if (!bot) return;
-  const now = DateTime.now().toMillis();
+  const nowUtc = DateTime.now().toUTC().toISO()!;
+  const { db } = await import('../services/db.js');
 
-  for (const r of reminders) {
-    if (r.notified || now < r.triggerAt) continue;
+  // Query DB for due, un-notified, non-done reminders
+  const dueRows = db.prepare(`
+    SELECT id, chat_id, user_id, task, datetime, location, source
+    FROM todos
+    WHERE is_reminder = 1
+      AND datetime <= ?
+      AND notified = 0
+      AND done = 0
+    ORDER BY datetime ASC
+  `).all(nowUtc) as any[];
 
-    if (r.taskId) {
-      const plan = getPlan(r.chatId);
-      const todo = plan?.todos.find(t => t.id === r.taskId);
-      if (todo?.done) {
-        r.notified = true;
-        logger.info(`[Scheduler] Task "${r.task}" is already completed. Skipping reminder.`);
-        continue;
+  if (dueRows.length === 0) return;
+
+  for (const row of dueRows) {
+    // Double-guard: skip if already notified (race condition protection)
+    if (row.notified) continue;
+
+    // Display time in KZ local with date context: "сегодня в 11:00", "завтра в 14:00"
+    let displayTime = row.time || '';
+    if (row.datetime) {
+      const localDT = DateTime.fromISO(row.datetime, { zone: 'utc' }).setZone('Asia/Almaty');
+      if (localDT.isValid) {
+        const kzNow = DateTime.now().setZone('Asia/Almaty');
+        const isToday = localDT.hasSame(kzNow, 'day');
+        const isTomorrow = localDT.hasSame(kzNow.plus({ days: 1 }), 'day');
+        const dateLabel = isToday ? 'сегодня'
+          : isTomorrow ? 'завтра'
+          : localDT.setLocale('ru').toFormat('d MMMM');
+        displayTime = `${dateLabel} в ${localDT.toFormat('HH:mm')}`;
       }
     }
 
-    r.notified = true;
-
     const msgs: Record<string, string> = {
-      en: `REMINDER\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
-      ru: `НАПОМИНАНИЕ\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
-      kk: `ЕСКЕ САЛУ\n\n— ${r.task}${r.location ? ` · ${r.location}` : ''}\n— ${r.timeStr}`,
+      en: `REMINDER\n\n— ${row.task}${row.location ? ` · ${row.location}` : ''}\n— ${displayTime}`,
+      ru: `НАПОМИНАНИЕ\n\n— ${row.task}${row.location ? ` · ${row.location}` : ''}\n— ${displayTime}`,
+      kk: `ЕСКЕ САЛУ\n\n— ${row.task}${row.location ? ` · ${row.location}` : ''}\n— ${displayTime}`,
     };
-    const text = msgs[r.language] || msgs.en;
-
-    const snooze10 = r.language === 'ru' ? '+10 мин' : r.language === 'kk' ? '+10 мин' : '+10 min';
-    const snooze30 = r.language === 'ru' ? '+30 мин' : r.language === 'kk' ? '+30 мин' : '+30 min';
-    const snooze60 = r.language === 'ru' ? '+1 час' : r.language === 'kk' ? '+1 сағ' : '+1 hour';
-    const snoozeTmrw = r.language === 'ru' ? 'Завтра утром' : r.language === 'kk' ? 'Ертең таңертең' : 'Tomorrow morning';
-    const doneLabel = r.language === 'ru' ? 'Готово ✓' : r.language === 'kk' ? 'Дайын ✓' : 'Done ✓';
 
     const keyboard = new InlineKeyboard()
-      .text(snooze10, `snz_10_${r.taskId || '0'}`)
-      .text(snooze30, `snz_30_${r.taskId || '0'}`)
-      .text(snooze60, `snz_60_${r.taskId || '0'}`)
+      .text('+10 мин', `snz_10_${row.id}`)
+      .text('+30 мин', `snz_30_${row.id}`)
+      .text('+1 час', `snz_60_${row.id}`)
       .row()
-      .text(snoozeTmrw, `snz_tmrw_${r.taskId || '0'}`)
-      .text(doneLabel, `snz_done_${r.taskId || '0'}`);
+      .text('Завтра утром', `snz_tmrw_${row.id}`)
+      .text('Готово ✓', `snz_done_${row.id}`);
 
     try {
-      await bot.api.sendMessage(r.chatId, text, { reply_markup: keyboard });
-      logger.info(`[Scheduler] Sent reminder: "${r.task}" at ${r.timeStr}`);
-    } catch (err) {
-      logger.error(err, '[Scheduler] Failed to send reminder');
-    }
-  }
+      await bot.api.sendMessage(row.chat_id, msgs.en, { reply_markup: keyboard });
+      logger.info(`[Scheduler] Sent reminder: "${row.task}" at ${displayTime}`);
 
-  // Cleanup notified reminders older than 60s
-  const cutoff = now - 60_000;
-  for (let i = reminders.length - 1; i >= 0; i--) {
-    if (reminders[i].notified && reminders[i].triggerAt < cutoff) {
-      reminders.splice(i, 1);
+      // Mark notified in DB immediately — never re-send
+      db.prepare('UPDATE todos SET notified = 1 WHERE id = ?').run(row.id);
+      logger.info(`[Scheduler] Sent + marked notified: "${row.task}"`);
+    } catch (err) {
+      logger.error(err, `[Scheduler] Failed to send reminder: "${row.task}"`);
     }
   }
 }
@@ -273,7 +289,7 @@ export function cancelReminderByTaskId(taskId: string) {
   for (let i = reminders.length - 1; i >= 0; i--) {
     if (reminders[i].taskId === taskId) {
       reminders.splice(i, 1);
-      console.log(`[Scheduler] Cancelled reminder for task ${taskId}`);
+      logger.debug(`[Scheduler] Cancelled reminder for task ${taskId}`);
     }
   }
 }

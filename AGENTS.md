@@ -1,107 +1,198 @@
-# flexAI — Voice Bot
+# flexAI — Telegram Voice Bot (Agent Handbook)
 
-## Quick start
+## Quick Start
 ```bash
-npm install              # dependencies
-cp .env.example .env     # fill tokens
-npm run dev              # tsx watch (no typecheck)
-npm run build && npm start  # production
+npm install
+cp .env.example .env      # fill TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, GROQ_API_KEY
+npm run dev                # tsx watch src/index.ts (no typecheck)
+npm run build && npm start # production
+```
+
+Clean DB to test fresh:
+```bash
+rm -f data/flexai.db day_plan.json memory.json user_config.json
 ```
 
 ## Architecture
 
 ```
 src/
-  index.ts          — bot entry, commands, callbacks, message routing
-  config.ts         — env vars: TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, GROQ_API_KEY, etc.
-  server.ts         — Express server (port 3000), serves webapp.html + REST APIs
+  index.ts             — Bot entry, commands (/report, /weekly, /clear, /help, /reminders),
+                         callback queries (conflict, reschedule, snooze, reminder, image),
+                         message handlers (voice → handleVoice, text → processTextInput, photo → handleImage)
+  config.ts            — Singleton config with initConfig() guard. Reads TELEGRAM_BOT_TOKEN,
+                         OPENAI_API_KEY (supports GitHub PAT → GitHub Models), GROQ_API_KEY
+  server.ts            — Express (port 3000), serves webapp.html + REST APIs (todo/complete,
+                         todo/reschedule, todo/reminder, health, memory CRUD)
+
   handlers/
-    voice.ts        — voice message pipeline: download → whisper → analysis → location → conflict → delivery
+    voice.ts           — Core: handleVoice (download → transcribe → route),
+                         handlePlanIntent (analyze → conflict → save → delivery),
+                         processTextInput (shared pipeline: pending time → intent → memory → routeByIntent),
+                         routeByIntent (dispatches to action/reschedule/delete/complete/report/etc.)
+    image.ts           — Screenshot processing: handleImage (GPT-4o vision), mapSourceAppToTaskSource
+
   services/
-    whisper.ts      — Groq Whisper (whisper-large-v3), no ffmpeg needed (OGG/Opus natively supported)
-    analysis.ts     — GPT-4o JSON extraction of todos, dates, locations, priorities
-    planStore.ts    — in-memory + day_plan.json persistence (accumulative per userId)
-    scheduler.ts    — in-process 30s interval, sends plain-text reminders
-    pendingStore.ts — pending voice notes + user flow state (awaiting_reschedule, awaiting_custom_reminder)
-    delivery.ts     — post-analysis flow: summary → sequential reminder buttons → chart + PDF
-    chart.ts        — ChartJSNodeCanvas (Gantt-style horizontal bar)
-    pdf.ts          — PDFKit A4 single-page, dark theme
-    messages.ts     — inline keyboards and summary/conflict/reminder message builders
-    userConfig.ts   — user_config.json: language, location, reminder_offset_minutes
-    location.ts     — Google Places / OpenWeather / BigDataCloud / OSM geocoding
-    reporter.ts     — /report and /weekly plain-text formatting
+    whisper.ts         — Groq Whisper (whisper-large-v3), OGG/Opus native, auto-detect RU/EN/KK
+    analysis.ts        — GPT-4o LLM prompt for JSON extraction of todos/dates/times/priorities/locations
+    intent.ts          — LLM-based intent classification + regex quickIntentOverride, extractMemoryUpdate
+    planStore.ts       — SQLite query builder: savePlan (with dedup + same-batch conflict detection),
+                         getTasksFiltered (with DISTINCT + is_reminder filter),
+                         dedupeReportTasks, findFreeTimeGaps, getConflicts, CRUD operations
+    scheduler.ts       — 30s interval checkReminders (DB-driven: SELECT is_reminder=1 AND notified=0
+                         AND datetime<=now), marks notified=1 after send, snooze via callbacks
+    pendingStore.ts    — In-memory pending state: flow state, reschedule state, image followup,
+                         day memory, conflict state
+    delivery.ts        — Post-save: summary → per-task reminder offset buttons → delivery flow
+    pdf.ts             — Old PDFKit renderer (generateReportPdf, generateMultiDateReportPdf)
+    report.ts          — New PDFKit renderer (generateDailyReportPdf, generateRangeReportPdf)
+                         with direct SQLite queries, dark Obsidian theme
+    messages.ts        — Inline keyboards and message builders (summary, conflict, reminder, nav)
+    userConfig.ts      — Per-user settings: language, city, lat/lng, reminder_offset_minutes
+    memoryStore.ts     — memory.json read/write, patterns sanitization, occurrence threshold
+    location.ts        — Google Places / OpenWeather / BigDataCloud / OSM geocoding
+    db.ts              — SQLite schema CREATE TABLE, migrations (ALTER TABLE ADD COLUMN),
+                         insertReminder, detectTimeConflicts, getUserTasks
+    textRouter.ts      — Alternative text regex router (fast path for complete/reschedule/report)
+    groq.ts            — Groq LLM client (llama-3.3-70b-versatile), used for intent detection
+    queue.ts           — PQueue for voice processing concurrency (5 concurrent)
+
   types/
-    analysis.ts     — TodoItem, AnalysisResult interfaces
-    i18n.ts         — PDF label translations (en/ru/kk)
-public/
-  webapp.html       — Telegram Mini App with timeline, tasks, reschedule modal
-day_plan.json       — persistent store (auto-migrated from v1 to v2 format)
-user_config.json    — per-user settings
+    analysis.ts        — TodoItem, AnalysisResult, TimeFrame, TaskSource interfaces
+    i18n.ts            — PDF label translations (en/ru/kk)
+
+  utils/
+    timezone.ts        — Luxon-based: kzLocalToUTC, utcToKzLocalTime, parseEventTimeAsKZ,
+                         nowKZ(), getKzToday(). NEVER use raw Date.
 ```
 
-## Data flow (voice message)
-1. Download OGG → `temp/v_{timestamp}.ogg`
-2. Groq Whisper (auto-detect RU/EN/KK)
-3. GPT-4o analysis → structured JSON (todos, dates, priorities, locations)
-4. Location assistant (parallel: Google Places, weather, directions)
-5. Conflict detection (time overlaps with existing todos)
-6. If conflicts → inline keyboard: "Keep both" / "Reschedule"
-7. Else → save plan → schedule reminders → delivery flow
-8. Delivery: summary text → per-task reminder offset buttons → chart image + PDF
+## Database Schema (`data/flexai.db`)
 
-## Key commands & callbacks
-| Command | Action |
-|---------|--------|
-| `/start` | Welcome + nav keyboard |
-| `/report` | All pending + completed tasks |
-| `/weekly` | Past 7 days summary |
-| `/clear` | Archive completed tasks |
-| `/language` | Inline lang picker (ru/en/kk) |
-| `conflict_keep_{id}` | Keep overlapping tasks |
-| `conflict_reschedule_{id}` | Enter new time (flow state) |
-| `srem_{10,30,60,none,custom}_{id}` | Set reminder offset per task |
+### `todos` table
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT (UUID) | PK |
+| chat_id | INTEGER | FK → plans |
+| user_id | INTEGER | FK → users |
+| task | TEXT | Task description |
+| priority | TEXT | 'high'/'medium'/'low' |
+| done | INTEGER | 0/1 |
+| time | TEXT | 'HH:MM' or null |
+| datetime | TEXT | UTC ISO 'YYYY-MM-DDTHH:MM:00Z' |
+| date | TEXT | 'YYYY-MM-DD' or null |
+| duration | INTEGER | Default 30 (minutes) |
+| location | TEXT | Optional |
+| source | TEXT | 'teams'/'telegram'/'voice'/'manual' |
+| completed_at | TEXT | UTC ISO |
+| snoozed_until | TEXT | UTC ISO |
+| scheduled_time_kz | TEXT | 'YYYY-MM-DDTHH:MM' (KZ local) |
+| is_reminder | INTEGER | 0=task, 1=reminder row |
+| scheduled_at | TEXT | UTC ISO (backfill target) |
+| parent_task_id | TEXT | Links compound reminder to parent task |
+| reminder_minutes | INTEGER | User-requested offset |
+| notified | INTEGER | 0=unsent, 1=sent |
+| explicitly_set | INTEGER | 1=user explicitly asked for this reminder |
 
-## API endpoints (Express, port 3000)
-| Endpoint | Body | Purpose |
-|----------|------|---------|
-| `POST /api/todo/complete` | `{chatId, taskId, done}` | Toggle done |
-| `POST /api/todo/reschedule` | `{chatId, taskId, newTime}` | Change time, update scheduler |
-| `POST /api/todo/reminder` | `{chatId, userId, offsetMinutes}` | Global offset |
-| `GET /health` | — | Health check |
-| `GET /webapp` | — | Serves webapp.html |
+### Key queries
+```sql
+-- Task report (daily)
+SELECT DISTINCT * FROM todos WHERE user_id = ? AND (is_reminder IS NULL OR is_reminder = 0)
+  AND (date = ? OR substr(COALESCE(scheduled_time_kz, date || 'T' || COALESCE(time, '00:00')), 1, 10) = ?)
+  ORDER BY CASE WHEN time IS NULL THEN 1 ELSE 0 END, time ASC
 
-## Storage format
-- `day_plan.json`: `{ __version: 2, userPlans: { userId: [StoredPlan[]] }, latestByChatId: { chatId: StoredPlan } }`
-- `user_config.json`: `{ userId: { language, city, lat, lng, reminder_offset_minutes } }`
-- Temp files: `temp/v_*.ogg` (auto-deleted after processing)
+-- Due reminders (scheduler tick)
+SELECT id, chat_id, user_id, task, datetime, location FROM todos
+  WHERE is_reminder = 1 AND datetime <= ? AND notified = 0 AND done = 0
+  ORDER BY datetime ASC
 
-## Scheduler
-- In-process `setInterval(checkReminders, 30_000)`
-- Reminders are in-memory `ScheduledReminder[]` array (not persisted across restarts)
-- Offset: `eventTime - offset_minutes * 60_000`
-- Skips if `todo.done` at trigger time
-- Cleans up notified reminders older than 60s
-- `rescheduleReminder()` replaces reminder by `taskId`
+-- Conflict detection
+SELECT * FROM todos WHERE user_id = ? AND done = 0 AND (is_reminder IS NULL OR is_reminder = 0)
+  AND (DATE(scheduled_at) = ? OR DATE(datetime) = ? OR date = ?)
+```
 
-## Mini App (webapp.html)
-- Receives plan data as base64 JSON in URL hash (`/#{base64}`)
-- 3 tabs: Timeline, Tasks, Reminder
-- Toggle done, reschedule via time picker modal, set global reminder offset
-- Telegram WebApp SDK: `tg.ready()`, `tg.expand()`, `tg.HapticFeedback`
-- Dark theme, glass-morphism design, accent color #1e51de
+## Data Flow
 
-## i18n
-- Three languages: en, ru, kk
-- Language detection from transcript (analysis.ts sets `language` field)
-- User can override via `/language` command (stored in `user_config.json`)
-- Error messages in `index.ts` use `getLang(userId)` lookup
+### Voice Message
+```
+Voice OGG → Groq Whisper → transcript → processTextInput → detectIntent → routeByIntent
+  ├── "action" → handlePlanIntent → analyzeTranscript (GPT-4o) → getConflicts
+  │     ├── conflicts exist → inline keyboard (Keep/Reschedule/Skip)
+  │     └── no conflicts → savePlan → scheduleReminders → startDeliveryFlow
+  │           └── untimed tasks? → pendingTimeUpdate → ask "В какое время?"
+  ├── "reschedule" → handleRescheduleIntent → findTaskByText → updateTaskDateTime
+  ├── "delete" → handleDeleteIntent → extractDeleteInfo → deleteTaskById
+  ├── "complete" → handleCompleteIntent → findTasksByName → markTaskDone
+  ├── "report" → generateDailyReportPdf (default) or generateRangeReportPdf (if date_from/date_to)
+  ├── "free_time_query" → findFreeTimeGaps → buildFreeTimeMessage → reply
+  ├── "reminder" → handleReminderIntent → insertReminder → scheduler.push
+  ├── "query" → askQuestion (LLM with plans + memory context)
+  └── "social" → chatReply (LLM with memory context)
+```
 
-## Important quirks
-- **No ffmpeg needed** — Groq Whisper accepts raw OGG/Opus
-- **No typecheck in dev** — `tsx src/index.ts` skips type checking
-- **LLM prompt** in `analysis.ts` — must include current date context for relative date resolution
-- **UUID v4** assigned to every todo item in `analysis.ts:98-107`
-- **Flow state** (`pendingStore.ts`) — user's active flow tracked by userId, auto-cleaned after 10 min
-- **Conflict detection** compares time+duration windows, ignores date mismatch
-- **Reminders are ephemeral** — lost on restart unless persisted (currently in-memory only)
-- **GitHub Models support** — if `OPENAI_API_KEY` starts with `ghp_` or `github_pat_`, baseURL switches to `models.inference.ai.azure.com`
+### Text Message
+```
+Text → processTextInput (same pipeline as voice, no transcription step)
+```
+
+### Photo/Screenshot
+```
+Photo → handleImage (GPT-4o vision) → extract tasks → savePlan + delivery flow
+```
+
+## Key Rules (Taste Preferences)
+
+1. **All datetime operations use luxon.** Never `new Date()`, `Date.now()`, `.toISOString()`, `.getHours()`, `.getMinutes()`.
+2. **Convert UTC to local zone first** (`.setZone('Asia/Almaty')`), perform arithmetic in local time, then convert back via `.toUTC().toISO()`.
+3. **`reminder_minutes` must be null unless user explicitly said "напомни за X минут".** Never default to 10.
+4. **Only extract times user explicitly stated.** "вечером", "после обеда" → `time: null`, not inferred.
+5. **Compound reminders only created when `reminder_minutes > 0`.** Check: `if (!todo.reminder_minutes && !todo.reminder_at) continue;`
+6. **All task queries filter `is_reminder = 0`** to exclude reminder rows from task reports.
+7. **Same-batch conflict detection** in `savePlan` — checks time overlap against already-inserted batch tasks.
+8. **Scheduler is DB-driven.** Queries `todos WHERE is_reminder=1 AND notified=0 AND datetime<=now AND done=0`. Marks `notified=1` after send.
+9. **Pattern storage requires 3+ occurrences.** `pattern_occurrences` tracks counts, `PATTERN_THRESHOLD = 3`.
+10. **Config is a singleton.** `initConfig()` guard prevents double initialization.
+11. **Memory patterns only store valid keys:** `sleep_time`, `wake_up_time`, `work_time`, `lunch_time`, `dinner_time`, `breakfast_time`, `gym_time`.
+12. **`bed_time` merges into `sleep_time`.** Never stores `bed_time` as separate key.
+
+## Common Bugs & Fixes
+
+### Config prints twice
+Check `src/index.ts` — it had its own `console.log` lines (lines 86-90) that duplicate the config output. Remove them if they reappear.
+
+### Reminder created for every task
+The LLM was defaulting `reminder_minutes = 10`. Fixed by:
+- Changed example in prompt from `"reminder_minutes": 10` to `"reminder_minutes": null`
+- Added rule: "Never set reminder_minutes = 10 or any other number as default"
+- Added guard in `savePlan`: `if (!hasExplicitReminder) continue;`
+
+### Task appears twice in PDF
+Dedup key was `task::time` — same task with time vs without time were different keys. Fixed: dedup by task name only, preferring entry WITH time.
+
+### "Could not recognize speech" on short voice
+Added file size guard (`< 1000 bytes`), detailed error logging (`[Whisper] Failed: status, message, size, format`).
+
+### Reminder shows raw time "11:00"
+Fixed `checkReminders` display to show `сегодня в 11:00` or `завтра в 14:00` using `hasSame()` comparison.
+
+### Tasks at same time saved without conflict
+Added same-batch conflict detection in `savePlan` via `insertedThisBatch` array and `timeToMinutes` overlap check.
+
+## LLM Prompt Patterns
+
+### Intent detection (`intent.ts`)
+Uses Groq LLaMA 3.3 70B. Returns JSON: `{ intent, confidence, target_task, target_date, target_time, ... }`. CRITICAL: fields must be null for intents they don't belong to.
+
+### Analysis (`analysis.ts`)
+Uses GPT-4o (or GitHub Models). Returns JSON: `{ title, summary, key_points, todos[], tags, language, timeframe, ... }`. CRITICAL: timezone context must be injected, relative times are NOT inferred (must have explicit HH:MM).
+
+### Memory update (`intent.ts:extractMemoryUpdate`)
+LLM decides if transcript contains new info worth remembering. Returns `{ should_update, memory_update }`. Memory includes habits, projects, preferences, important_dates, patterns, places.
+
+## Testing
+
+Start bot: `npm run dev`
+Clean DB: `rm -f data/flexai.db day_plan.json memory.json user_config.json`
+Send voice: speak into Telegram
+Send text: type any message
+Send photo: screenshot of calendar/app
+Commands: `/report`, `/weekly`, `/clear`, `/reminders`, `/help`, `/language`

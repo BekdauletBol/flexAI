@@ -124,6 +124,8 @@ export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
 
     // ── Timeline ─────────────────────────────────────
     const timedTasks = analysis.todos.filter(t => t.time).sort((a, b) => a.time!.localeCompare(b.time!));
+    console.log('[PDF] Total tasks in report:', analysis.todos.length, '| Timed:', timedTasks.length);
+
     if (timedTasks.length > 0) {
       const lineX = 60;
       const nodeYs: number[] = [];
@@ -181,6 +183,7 @@ export async function generatePdf(analysis: AnalysisResult): Promise<Buffer> {
 
     // ── No Time Set ──────────────────────────────────
     const untimedTasks = analysis.todos.filter(t => !t.time);
+    console.log('[PDF] Untimed:', untimedTasks.length);
     if (untimedTasks.length > 0) {
       if (y > MAX_Y - 60) { doc.addPage(); y = M; }
 

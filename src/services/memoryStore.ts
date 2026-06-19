@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { DateTime } from 'luxon';
+import { logger } from '../logger.js';
 
 export interface UserMemory {
   habits: string[];
@@ -8,9 +9,19 @@ export interface UserMemory {
   preferences: Record<string, string>;
   important_dates: string[];
   patterns: Record<string, string>;
+  pattern_occurrences: Record<string, number>;
   places: string[];
   last_updated: string;
 }
+
+// Only these pattern keys represent recurring daily habits — one-time events are excluded
+const VALID_PATTERN_KEYS = new Set([
+  'sleep_time', 'wake_up_time', 'work_time', 'lunch_time',
+  'dinner_time', 'breakfast_time', 'gym_time',
+]);
+
+// Minimum occurrences before a pattern is promoted to the active patterns list
+const PATTERN_THRESHOLD = 3;
 
 const MEMORY_PATH = path.resolve(process.cwd(), 'memory.json');
 let memoryData: Record<string, UserMemory> = {};
@@ -22,6 +33,7 @@ function defaultMemory(): UserMemory {
     preferences: {},
     important_dates: [],
     patterns: {},
+    pattern_occurrences: {},
     places: [],
     last_updated: '',
   };
@@ -31,10 +43,10 @@ function load() {
   try {
     if (fs.existsSync(MEMORY_PATH)) {
       memoryData = JSON.parse(fs.readFileSync(MEMORY_PATH, 'utf-8'));
-      console.log(`[Memory] Loaded memory for ${Object.keys(memoryData).length} users`);
+      logger.debug(`[Memory] Loaded memory for ${Object.keys(memoryData).length} users`);
     }
   } catch (err) {
-    console.error('[Memory] Load error:', err);
+    logger.error('[Memory] Load error: %s', String(err));
     memoryData = {};
   }
 }
@@ -53,17 +65,50 @@ export function getUserMemory(userId: number): UserMemory {
 export function updateUserMemory(userId: number, update: Partial<UserMemory>) {
   const current = getUserMemory(userId);
   const key = String(userId);
+
+  // ── Sanitize patterns: only keep VALID recurring habit keys ──
+  const sanitizedPatterns: Record<string, string> = {};
+  const updatedOccurrences = { ...(current.pattern_occurrences || {}) };
+
+  if (update.patterns) {
+    for (let [k, v] of Object.entries(update.patterns)) {
+      if (!v) continue;
+
+      // Merge bed_time → sleep_time
+      if (k === 'bed_time') {
+        k = 'sleep_time';
+      }
+
+      if (!VALID_PATTERN_KEYS.has(k)) {
+        logger.debug(`[Memory] Ignored non-recurring pattern key: "${k}" — not a daily habit`);
+        continue;
+      }
+
+      // Track occurrence count
+      updatedOccurrences[k] = (updatedOccurrences[k] || 0) + 1;
+
+      // Only promote to active patterns after threshold is reached
+      if (updatedOccurrences[k] >= PATTERN_THRESHOLD) {
+        sanitizedPatterns[k] = v;
+        logger.debug(`[Memory] Pattern "${k}" reached threshold (${updatedOccurrences[k]}x), promoting to active patterns`);
+      } else {
+        logger.debug(`[Memory] Pattern "${k}" occurrence ${updatedOccurrences[k]}/${PATTERN_THRESHOLD} — not yet promoted`);
+      }
+    }
+  }
+
   memoryData[key] = {
     habits: update.habits || current.habits,
     projects: update.projects || current.projects,
     preferences: { ...current.preferences, ...(update.preferences || {}) },
     important_dates: update.important_dates || current.important_dates,
-    patterns: { ...current.patterns, ...(update.patterns || {}) },
+    patterns: { ...current.patterns, ...sanitizedPatterns },
+    pattern_occurrences: updatedOccurrences,
     places: update.places || current.places,
     last_updated: DateTime.now().setZone('Asia/Almaty').toUTC().toISO()!,
   };
   save();
-  console.log(`[Memory] Updated for user ${userId}`);
+  logger.debug(`[Memory] Updated for user ${userId}`);
 }
 
 export function formatMemoryForDisplay(userId: number, lang: string): string {

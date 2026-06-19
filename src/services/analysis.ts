@@ -5,6 +5,10 @@ import { v4 as uuid } from 'uuid';
 import { getTemporalContext } from './userConfig.js';
 import { DateTime } from 'luxon';
 import { KZ_ZONE } from '../utils/timezone.js';
+import { getTasksForDate } from './db.js';
+import { getKzToday } from '../utils/timezone.js';
+import { getUserMemory } from './memoryStore.js';
+import { logger } from '../logger.js';
 
 const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
@@ -54,6 +58,42 @@ function getNextDate(baseDate: string, daysOffset: number): string {
     .toFormat('yyyy-MM-dd');
 }
 
+/** Build schedule context block for the AI prompt so it knows existing tasks */
+function buildScheduleContextForPrompt(userId: number, todayDate: string): string {
+  try {
+    const todayTasks = getTasksForDate(userId, todayDate);
+    if (todayTasks.length === 0) {
+      return `User's schedule today (${todayDate}): (empty)\nConflicts today: 0`;
+    }
+    const taskLines = todayTasks.map((t: any) => {
+      const time = t.time || '—:——';
+      const src = t.source || 'manual';
+      return `- ${t.task} at ${time} (${src})`;
+    }).join('\n');
+    return `User's schedule today (${todayDate}):\n${taskLines}\nConflicts today: ${todayTasks.length}`;
+  } catch {
+    return '';
+  }
+}
+
+/** Build patterns context block from user's known recurring habits */
+function buildPatternsContextForPrompt(userId: number): string {
+  try {
+    const patterns = getUserMemory(userId).patterns;
+    const entries = Object.entries(patterns).filter(([, v]) => v);
+    if (entries.length === 0) return '';
+
+    const lines = entries.map(([key, val]) => {
+      const label = key.replace(/_/g, ' ');
+      return `- ${label}: ${val}`;
+    }).join('\n');
+
+    return `\nUser's known daily patterns (for reference only — do NOT use to fill missing times):\n${lines}\n`;
+  } catch {
+    return '';
+  }
+}
+
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timeoutId: NodeJS.Timeout;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -87,13 +127,42 @@ TIMEZONE RULE (critical):
 - Store dates as "YYYY-MM-DD" and times as "HH:MM" in the user's local timezone.
 - "tomorrow" means the next calendar day in the user's LOCAL timezone.
 
+STRICT TIME EXTRACTION RULES (critical — never guess):
+- Extract ONLY times the user explicitly stated with numbers + am/pm/час/утра/вечера
+- "в 3" → no time (3 could mean anything). "в 15:00" → "15:00". "at 3pm" → "15:00". "в 8 утра" → "08:00".
+- If no explicit time stated for a task → set "time": null. NO exceptions.
+- NEVER infer time from context like "after lunch", "вечером", "после работы", "утром".
+- NEVER use memory patterns to fill missing times.
+- NEVER assign a time from one task to another.
+- If user says "созвон в 11:00 и встреча" → only "созвон" gets time 11:00, "встреча" gets null.
+- "через час" → set time to null (relative offset is handled separately, not as an absolute time).
+
+TASK TITLE RULES (critical):
+- Task title must be clean. Remove reminder prefixes:
+  - "напомнить о встрече" → "Встреча"
+  - "напомни про звонок" → "Звонок"
+  - "напомнить сделать X" → "X"
+  - "remind me about meeting" → "Meeting"
+  - "remind me to do X" → "X"
+- Never create a separate task for the reminder itself.
+
+DURATION RULES:
+- If user mentions a time range ("с 9 до 9:30", "from 9 to 9:30", "9:00-9:30"), calculate duration_minutes from the range.
+- "с 9 до 9:30" → time: "09:00", duration: 30
+- "с 14:00 до 15:00" → time: "14:00", duration: 60
+
+TIME ASSIGNMENT RULES:
+- Never assign the same time to two different tasks. If the user lists multiple tasks at different times, each gets its own time.
+- If two tasks would have the same time, shift the second by duration_minutes of the first.
+- Preserve the exact order of tasks as the user mentioned them.
+
 Return ONLY a JSON object in this EXACT format:
 {
   "title": "Short title (5-7 words)",
   "summary": "2-3 sentence summary",
   "key_points": ["point 1", "point 2"],
   "todos": [
-    { "task": "Task description", "priority": "high", "done": false, "time": "15:00", "date": "2026-05-29", "duration": 30, "location": "Place name or null" }
+    { "task": "Task description", "priority": "high", "done": false, "time": "15:00", "date": "2026-05-29", "duration": 30, "location": "Place name or null", "reminder_minutes": null }
   ],
   "tags": ["#tag1", "#tag2"],
   "raw_transcript": "original transcript unchanged",
@@ -149,6 +218,20 @@ Example output:
   { "task": "Встреча с Хасые", "time": "12:00" }
   { "task": "Встреча с Ворк", "time": "12:40" }
 
+COMPOUND REMINDER RULE (critical):
+If the user mentions a task/event AND says "remind me in X minutes/hours" (e.g. "у меня в 17.20 будет гольф, напомни через 10 минут" or "I have golf at 5:20pm, remind me in 10 minutes"), extract EXACTLY ONE todo object where:
+- "task": the actual task description (e.g. "Гольф" / "Golf")
+- "time": the event time (e.g. "17:20")
+- "reminder_minutes": the user's specified offset (e.g. 10). Set to null if user said nothing about reminders.
+- Do NOT create a second todo for the reminder itself.
+- The reminder_minutes field tells the system to send a reminder X minutes BEFORE the scheduled time.
+
+REMINDER_MINUTES RULE (critical — never set defaults):
+- reminder_minutes must be null UNLESS the user explicitly said "напомни за X минут" for THIS specific task.
+- If user said nothing about reminders → reminder_minutes = null. NO EXCEPTIONS.
+- Never set reminder_minutes = 10 or any other number as a default.
+- A task like "Обед в 14:00" with no reminder mention → reminder_minutes = null.
+
 Guidelines:
 - Be concise, action-oriented. Extract EVERY actionable item.
 - Generate #tags. "language": "ru","en","kk". Keep raw_transcript unchanged.
@@ -180,9 +263,13 @@ RESOLUTION RULES:
 - "послезавтра" → ${getNextDate(temporal.localDate, 2)}
 - "next [weekday]" → calculate from ${temporal.localDate}
 - All times the user says are in ${temporal.timezone} (${temporal.localTime} is NOW)
-- NEVER use server/UTC time for user-facing dates. Always use the user's local date above.`;
+- NEVER use server/UTC time for user-facing dates. Always use the user's local date above.
 
-    console.log(`[Analysis] Analyzing (${transcript.length} chars) for user ${userId || 'unknown'} [tz=${temporal.timezone}]...`);
+${userId ? buildScheduleContextForPrompt(userId, temporal.localDate) : ''}
+
+${userId ? buildPatternsContextForPrompt(userId) : ''}`;
+
+    logger.debug(`[Analysis] Analyzing (${transcript.length} chars) for user ${userId || 'unknown'} [tz=${temporal.timezone}]...`);
 
     const response = await withTimeout(analysisLlm.chat.completions.create({
       model: ANALYSIS_MODEL,
@@ -203,15 +290,15 @@ RESOLUTION RULES:
     if (parsed) {
       result = parsed as AnalysisResult;
     } else {
-      console.error('[Analysis] JSON Parse Error');
-      console.error('[Analysis] Raw content (first 2000 chars):', content?.substring(0, 2000));
+      logger.error('[Analysis] JSON Parse Error');
+      logger.error('[Analysis] Raw content (first 2000 chars): %s', content?.substring(0, 2000));
       // Retry with simplified prompt focused only on todos
       try {
-        console.log('[Analysis] Retrying with simplified prompt...');
+        logger.debug('[Analysis] Retrying with simplified prompt...');
         const retryResponse = await withTimeout(analysisLlm.chat.completions.create({
           model: ANALYSIS_MODEL,
           messages: [
-            { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), datetime ("YYYY-MM-DDTHH:MM:00" or null), duration (number, default 30). Extract EVERY task mentioned, do not skip any. Preserve foreign terms, acronyms, and brand names verbatim. Language: same as transcript.` + contextPrompt },
+            { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), datetime ("YYYY-MM-DDTHH:MM:00" or null), duration (number, default 30), reminder_minutes (number or null — minutes before the task to send a reminder). If the user says "remind me in X minutes" about a task, set reminder_minutes on that task. Extract EVERY task mentioned, do not skip any. Preserve foreign terms, acronyms, and brand names verbatim. Language: same as transcript.` + contextPrompt },
             { role: 'user', content: transcript },
           ],
           response_format: { type: 'json_object' },
@@ -224,16 +311,16 @@ RESOLUTION RULES:
           if (!retryParsed) throw new Error('Retry JSON parse failed');
           result = retryParsed as AnalysisResult;
           result.todos = result.todos || [];
-          console.log(`[Analysis] Retry succeeded: ${result.todos.length} todos`);
+          logger.debug(`[Analysis] Retry succeeded: ${result.todos.length} todos`);
         } else {
           throw new Error('Empty retry response');
         }
       } catch (retryErr) {
-        console.error('[Analysis] Retry also failed:', retryErr);
+        logger.error('[Analysis] Retry also failed: %s', String(retryErr));
         throw new Error(`TRANSCRIPT_FALLBACK:${transcript}`);
       }
     }
-    console.log(`[Analysis] Parsed ${result.todos.length} todos`);
+    logger.debug(`[Analysis] Parsed ${result.todos.length} todos`);
     result.raw_transcript = transcript;
     result.title = result.title || 'Voice Note';
     result.summary = result.summary || transcript.substring(0, 200);
@@ -262,14 +349,15 @@ RESOLUTION RULES:
       date: t.date || undefined,
       duration: t.duration || 30,
       location: t.location || undefined,
+      reminder_minutes: (t.reminder_minutes && Number(t.reminder_minutes) > 0) ? Number(t.reminder_minutes) : undefined,
     }));
 
     const timed = result.todos.filter(t => t.time).length;
     const hasLoc = !!result.needs_location_check;
-    console.log(`[Analysis] "${result.title}" [${result.language}] — ${result.todos.length} todos (${timed} timed) ${hasLoc ? '📍 location check' : ''}`);
+    logger.debug(`[Analysis] "${result.title}" [${result.language}] — ${result.todos.length} todos (${timed} timed) ${hasLoc ? '📍 location check' : ''}`);
     return result;
   } catch (error) {
-    console.error('[Analysis] FULL ERROR:', error);
+    logger.error('[Analysis] FULL ERROR: %s', String(error));
     throw new Error(`Failed to analyze: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

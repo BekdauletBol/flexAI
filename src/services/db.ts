@@ -26,6 +26,7 @@ for (const suffix of ['-wal', '-shm']) {
 }
 
 const db = new Database(DB_PATH);
+logger.debug('[DB] Instance path: %s', db.name || process.env.FLEXAI_DB_PATH);
 
 // Enable WAL for better concurrent performance
 db.pragma('journal_mode = WAL');
@@ -79,6 +80,12 @@ try { db.exec('ALTER TABLE todos ADD COLUMN plan_history_id INTEGER REFERENCES p
 try { db.exec('ALTER TABLE todos ADD COLUMN source TEXT'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN scheduled_time_kz TEXT'); } catch {}
 try { db.exec('ALTER TABLE todos ADD COLUMN is_reminder INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN scheduled_at TEXT'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN duration_minutes INTEGER'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN parent_task_id TEXT DEFAULT NULL'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN reminder_minutes INTEGER DEFAULT NULL'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN notified INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE todos ADD COLUMN explicitly_set INTEGER DEFAULT 0'); } catch {}
 
 // Backfill scheduled_time_kz from date + time for existing rows
 try {
@@ -86,6 +93,24 @@ try {
     UPDATE todos
     SET scheduled_time_kz = date || 'T' || COALESCE(time, '00:00')
     WHERE scheduled_time_kz IS NULL AND date IS NOT NULL
+  `);
+} catch {}
+
+// Backfill scheduled_at from datetime for existing rows
+try {
+  db.exec(`
+    UPDATE todos
+    SET scheduled_at = datetime
+    WHERE scheduled_at IS NULL AND datetime IS NOT NULL
+  `);
+} catch {}
+
+// Backfill duration_minutes from duration for existing rows
+try {
+  db.exec(`
+    UPDATE todos
+    SET duration_minutes = duration
+    WHERE duration_minutes IS NULL AND duration IS NOT NULL
   `);
 } catch {}
 
@@ -145,8 +170,8 @@ const stmtInsertTodo = db.prepare(`
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtInsertReminder = db.prepare(`
-  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, is_reminder)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, is_reminder, explicitly_set)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtGetTodosByChat = db.prepare('SELECT * FROM todos WHERE chat_id = ?');
 const stmtGetTodosByUser = db.prepare('SELECT * FROM todos WHERE user_id = ?');
@@ -168,7 +193,7 @@ const stmtDeletePlanHistory = db.prepare('DELETE FROM plan_history WHERE id = ?'
 const stmtDeletePlanHistoriesByUser = db.prepare('DELETE FROM plan_history WHERE user_id = ?');
 const stmtDeletePlanHistoriesByDate = db.prepare("DELETE FROM plan_history WHERE user_id = ? AND substr(created_at, 1, 10) = ?");
 
-export { db };
+export { db, DB_PATH };
 
 export function migrateFromJson() {
   const count = db.prepare('SELECT COUNT(*) as c FROM plans').get() as { c: number };
@@ -370,6 +395,8 @@ export function insertReminder(
   chatId: number,
   task: string,
   scheduledAtUtc: string,
+  parentTaskId?: string,
+  reminderMinutes?: number,
 ): string {
   const id = DateTime.now().toMillis().toString(36) + Math.random().toString(36).slice(2, 6);
 
@@ -388,7 +415,16 @@ export function insertReminder(
     null, // location
     'voice', // source
     1, // is_reminder
+    parentTaskId ? 1 : 0, // explicitly_set = 1 when created via voice command
   );
+
+  // Link to parent task and store reminder offset
+  if (parentTaskId) {
+    db.prepare(`
+      UPDATE todos SET parent_task_id = ?, reminder_minutes = ?, explicitly_set = 1 WHERE id = ?
+    `).run(parentTaskId, reminderMinutes ?? null, id);
+  }
+
   return id;
 }
 
@@ -469,13 +505,38 @@ function getTimeMinutes(todo: any): number | null {
       return parseInt(parts[0]) * 60 + parseInt(parts[1]);
     }
   }
-  if (todo.datetime) {
-    const dt = DateTime.fromISO(todo.datetime, { zone: 'utc' }).setZone('Asia/Almaty');
+  // Prefer scheduled_at (UTC ISO), then datetime
+  const isoField = todo.scheduled_at || todo.datetime;
+  if (isoField) {
+    const dt = DateTime.fromISO(isoField, { zone: 'utc' }).setZone('Asia/Almaty');
     if (dt.isValid) {
       return dt.hour * 60 + dt.minute;
     }
   }
   return null;
+}
+
+/** Get time range in minutes for a task (start, end) */
+export function getTaskTimeRange(todo: any): { start: number; end: number } | null {
+  const start = getTimeMinutes(todo);
+  if (start === null) return null;
+  const duration = todo.duration || todo.duration_minutes || 30;
+  return { start, end: start + duration };
+}
+
+/** Fetch all non-reminder tasks for a specific date (YYYY-MM-DD) */
+export function getTasksForDate(userId: number, dateStr: string): any[] {
+  return db.prepare(`
+    SELECT * FROM todos
+    WHERE user_id = ? AND done = 0 AND is_reminder = 0
+      AND (
+        DATE(scheduled_at) = ?
+        OR DATE(datetime) = ?
+        OR date = ?
+      )
+    ORDER BY
+      COALESCE(scheduled_at, datetime, date || 'T' || COALESCE(time, '00:00')) ASC
+  `).all(userId, dateStr, dateStr, dateStr) as any[];
 }
 
 export function findTaskByDescription(chatId: number, description: string): any | null {
@@ -503,15 +564,31 @@ export function getCompletedTasksToday(userId: number): any[] {
   return rows.filter(t => t.done && t.completed_at && t.completed_at.startsWith(today));
 }
 
-export function detectTimeConflicts(userId: number, newTodos: any[]): { existingTodo: any; newTodo: any }[] {
+export function detectTimeConflicts(userId: number, newTodos: any[], targetDate?: string): { existingTodo: any; newTodo: any }[] {
   const conflicts: { existingTodo: any; newTodo: any }[] = [];
-  const existingTodos = getUserTasks(userId);
+
+  // If targetDate provided, only fetch tasks for that date; otherwise fetch all
+  let existingTodos: any[];
+  if (targetDate) {
+    existingTodos = db.prepare(`
+      SELECT * FROM todos
+      WHERE user_id = ? AND done = 0
+        AND (is_reminder IS NULL OR is_reminder = 0)
+        AND (
+          DATE(scheduled_at) = ?
+          OR DATE(datetime) = ?
+          OR date = ?
+        )
+    `).all(userId, targetDate, targetDate, targetDate) as any[];
+  } else {
+    existingTodos = (db.prepare('SELECT * FROM todos WHERE user_id = ? AND done = 0 AND (is_reminder IS NULL OR is_reminder = 0)').all(userId) as any[]);
+  }
 
   for (const newTodo of newTodos) {
     const newStart = getTimeMinutes(newTodo);
     if (newStart === null) continue;
 
-    const newDuration = newTodo.duration || 30;
+    const newDuration = newTodo.duration || newTodo.duration_minutes || 30;
     const newEnd = newStart + newDuration;
 
     for (const existing of existingTodos) {
@@ -520,7 +597,7 @@ export function detectTimeConflicts(userId: number, newTodos: any[]): { existing
       const exStart = getTimeMinutes(existing);
       if (exStart === null) continue;
 
-      const exDuration = existing.duration || 30;
+      const exDuration = existing.duration || existing.duration_minutes || 30;
       const exEnd = exStart + exDuration;
 
       if (newStart < exEnd && newEnd > exStart) {
@@ -639,4 +716,20 @@ export function updateSnooze(taskId: string, snoozedUntil: string | null) {
 
 export function deleteTodosByUserAndId(userId: number, taskId: string) {
   db.prepare('DELETE FROM todos WHERE user_id = ? AND id = ?').run(userId, taskId);
+}
+
+/** Update all DB reminder rows linked to a parent task when the parent is rescheduled */
+export function updateLinkedReminders(parentTaskId: string, newScheduledAtUtc: string) {
+  db.prepare(`
+    UPDATE todos
+    SET datetime = ?,
+        date = ?,
+        notified = 0,
+        snoozed_until = NULL
+    WHERE parent_task_id = ?
+      AND is_reminder = 1
+      AND done = 0
+      AND notified = 0
+  `).run(newScheduledAtUtc, newScheduledAtUtc.substring(0, 10), parentTaskId);
+  logger.debug(`[DB] Updated linked reminders for parent task ${parentTaskId} → ${newScheduledAtUtc}`);
 }

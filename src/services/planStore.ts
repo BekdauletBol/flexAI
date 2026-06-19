@@ -1,7 +1,8 @@
 import { AnalysisResult, TodoItem, TimeFrame, TaskSource } from '../types/analysis.js';
-import { db, detectTimeConflicts } from './db.js';
+import { db, DB_PATH, detectTimeConflicts, getTasksForDate, getTaskTimeRange, insertReminder } from './db.js';
 import { kzLocalToUTC, utcToKzLocalDate, getKzToday, getKzTomorrow } from '../utils/timezone.js';
 import { DateTime } from 'luxon';
+import { logger } from '../logger.js';
 export { detectTimeConflicts, getKzToday, getKzTomorrow };
 
 // ─── KZ date helpers ───────────────────────────────────────────────────────────
@@ -15,12 +16,20 @@ export function buildScheduledTimeKz(date: string | null | undefined, time: stri
 // ─── Report task preparation ───────────────────────────────────────────────────
 
 export function dedupeReportTasks(tasks: TodoItem[]): TodoItem[] {
-  const seen = new Set<string>();
+  // Dedup by task name: keep the entry WITH time if both exist, prefer first occurrence
+  const seen = new Map<string, number>();
   const result: TodoItem[] = [];
   for (const t of tasks) {
-    const key = `${t.task.trim().toLowerCase()}::${t.time || ''}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const key = t.task.trim().toLowerCase();
+    const existingIdx = seen.get(key);
+    if (existingIdx !== undefined) {
+      // Prefer entry with time — replace if current has time and existing doesn't
+      if (t.time && !result[existingIdx].time) {
+        result[existingIdx] = t;
+      }
+      continue;
+    }
+    seen.set(key, result.length);
     result.push(t);
   }
   return result;
@@ -92,6 +101,80 @@ export function findFreeTimeGaps(userId: number, targetDate: string): { start: s
   }
 
   return gaps;
+}
+
+export interface FreeTimeResult {
+  gaps: { start: string; end: string; durationMin: number }[];
+  breaks: { afterTask: string; afterTime: string; durationMin: number; beforeNextTask: string }[];
+}
+
+const MIN_BREAK_MINUTES = 15;
+
+/** Compute free time gaps AND inter-task breaks for a given day */
+export function getFreeTimeAndBreaks(userId: number, targetDate: string): FreeTimeResult {
+  const tasks = getTasksFiltered(userId, { date: targetDate, includeDone: true }).filter(
+    (t) => t.time && !t.done
+  );
+
+  if (tasks.length === 0) {
+    return {
+      gaps: [{ start: minutesToTime(WORKDAY_START), end: minutesToTime(WORKDAY_END), durationMin: WORKDAY_END - WORKDAY_START }],
+      breaks: [],
+    };
+  }
+
+  const slots = tasks
+    .map((t) => ({
+      start: timeToMinutes(t.time!),
+      end: timeToMinutes(t.time!) + (t.duration || 30),
+      task: t.task,
+      time: t.time!,
+    }))
+    .sort((a, b) => a.start - b.start);
+
+  const gaps: { start: string; end: string; durationMin: number }[] = [];
+  const breaks: { afterTask: string; afterTime: string; durationMin: number; beforeNextTask: string }[] = [];
+  let cursor = WORKDAY_START;
+
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+
+    // Gap before this task
+    if (slot.start - cursor >= MIN_GAP_MINUTES) {
+      gaps.push({
+        start: minutesToTime(cursor),
+        end: minutesToTime(slot.start),
+        durationMin: slot.start - cursor,
+      });
+    }
+
+    // Break between this task and the next
+    if (i < slots.length - 1) {
+      const nextSlot = slots[i + 1];
+      const breakDuration = nextSlot.start - slot.end;
+      if (breakDuration >= MIN_BREAK_MINUTES) {
+        breaks.push({
+          afterTask: slot.task,
+          afterTime: minutesToTime(slot.end),
+          durationMin: breakDuration,
+          beforeNextTask: nextSlot.task,
+        });
+      }
+    }
+
+    cursor = Math.max(cursor, slot.end);
+  }
+
+  // Gap after last task
+  if (WORKDAY_END - cursor >= MIN_GAP_MINUTES) {
+    gaps.push({
+      start: minutesToTime(cursor),
+      end: minutesToTime(WORKDAY_END),
+      durationMin: WORKDAY_END - cursor,
+    });
+  }
+
+  return { gaps, breaks };
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -186,8 +269,8 @@ const stmtDeletePlanHistoriesByDate = db.prepare("SELECT id FROM plan_history WH
 const stmtMarkTodoDoneByUser = db.prepare("UPDATE todos SET done = 1, completed_at = datetime('now') WHERE id = ? AND user_id = ?");
 const stmtCountDoneByUser = db.prepare('SELECT COUNT(*) as c FROM todos WHERE user_id = ? AND done = 1');
 const stmtInsertTodo = db.prepare(`
-  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, plan_history_id, scheduled_time_kz)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO todos (id, chat_id, user_id, task, priority, done, time, datetime, date, duration, location, source, plan_history_id, scheduled_time_kz, is_reminder)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const stmtFindPlanByDate = db.prepare("SELECT id FROM plan_history WHERE user_id = ? AND substr(created_at, 1, 10) = ? ORDER BY created_at DESC LIMIT 1");
 const stmtGetLastPlanIdByChat = db.prepare('SELECT id FROM plan_history WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1');
@@ -196,8 +279,8 @@ const stmtDeleteTodosByPlanIdAndUser = db.prepare('DELETE FROM todos WHERE plan_
 
 // ─── Conflict Detection ────────────────────────────────────────────────────────
 
-export function getConflicts(userId: number, newTodos: TodoItem[]): Conflict[] {
-  const raw = detectTimeConflicts(userId, newTodos);
+export function getConflicts(userId: number, newTodos: TodoItem[], targetDate?: string): Conflict[] {
+  const raw = detectTimeConflicts(userId, newTodos, targetDate);
   return raw.map(r => ({
     newTodo: r.newTodo as unknown as TodoItem,
     existingTodo: r.existingTodo as unknown as TodoItem,
@@ -207,7 +290,7 @@ export function getConflicts(userId: number, newTodos: TodoItem[]): Conflict[] {
 // ─── Plan Operations ──────────────────────────────────────────────────────────
 
 export function savePlan(chatId: number, userId: number, analysis: AnalysisResult, source: TaskSource = 'manual') {
-  console.log('[DB] savePlan called — DB path:', db.name, 'user:', userId, 'chat:', chatId, 'todos:', analysis.todos.length);
+  logger.debug({ dbPath: DB_PATH, user: userId, chat: chatId, todos: analysis.todos.length }, '[DB] savePlan called');
   const defaultDate = getKzToday();
 
   // 1. Insert plan_history row
@@ -238,6 +321,8 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
   // 2. Insert deduplicated todos
   const existingTodos = stmtGetAllTodosByUser.all(userId) as any[];
   let insertedCount = 0;
+  const insertedTodoIds = new Set<string>();
+  const insertedThisBatch: TodoItem[] = []; // track for same-batch conflict detection
 
   for (const todo of analysis.todos) {
     const taskNorm = todo.task.trim().toLowerCase();
@@ -258,7 +343,29 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
       );
     });
 
-    if (!isDuplicate) {
+    // Same-batch conflict: check if this task's time overlaps with already-inserted tasks in this batch
+    const batchConflict = todo.time && insertedThisBatch.some(inserted => {
+      if (!inserted.time || (inserted.date || defaultDate) !== (todo.date || defaultDate)) return false;
+      const aStart = timeToMinutes(todo.time!);
+      const aEnd = aStart + (todo.duration || 30);
+      const bStart = timeToMinutes(inserted.time!);
+      const bEnd = bStart + (inserted.duration || 30);
+      return aStart < bEnd && bStart < aEnd;
+    });
+
+    if (batchConflict) {
+      logger.debug(`[PlanStore] Same-batch time conflict for "${todo.task}" at ${todo.time} — skipping insert`);
+    }
+
+    if (!isDuplicate && !batchConflict) {
+      // FIX: Detect reminder-like tasks ("Напомнить о X", "Remind me of X")
+      // and mark them as is_reminder so they don't appear in PDF task reports
+      const isReminderTask = /^(напомн|remind)/i.test(todo.task);
+      const isReminder = isReminderTask ? 1 : 0;
+      if (isReminderTask) {
+        logger.debug(`[PlanStore] Marked as reminder (hidden from reports): "${todo.task}"`);
+      }
+
       const scheduledTimeKz = buildScheduledTimeKz(todoDate, todo.time || null);
       stmtInsertTodo.run(
         todo.id,
@@ -274,22 +381,64 @@ export function savePlan(chatId: number, userId: number, analysis: AnalysisResul
         todo.location || null,
         todo.source || source,
         planHistoryId,
-        scheduledTimeKz
+        scheduledTimeKz,
+        isReminder
       );
-      console.log(`[DB] INSERTED todo: "${todo.task}" | date=${todoDate} time=${todo.time || '—'} | planHistoryId=${planHistoryId}`);
+      logger.debug(`[DB] INSERTED todo: "${todo.task}" | date=${todoDate} time=${todo.time || '—'} | planHistoryId=${planHistoryId}`);
       // Also add to existingTodos to prevent intra-batch duplicates
       existingTodos.push({ task: todo.task, date: todoDate });
+      insertedTodoIds.add(todo.id);
+      insertedThisBatch.push(todo);
       insertedCount++;
     } else {
-      console.log(`[PlanStore] Silently skipped duplicate task: "${todo.task}" for ${todoDate}`);
+      logger.debug(`[PlanStore] Silently skipped duplicate task: "${todo.task}" for ${todoDate}`);
     }
   }
 
-  console.log(`[PlanStore] Saved plan for user ${userId} / chat ${chatId}: "${analysis.title}" (${insertedCount} todos, ${analysis.timeframe})`);
+  logger.debug(`[PlanStore] Saved plan for user ${userId} / chat ${chatId}: "${analysis.title}" (${insertedCount} todos, ${analysis.timeframe})`);
 
-  // Verify persistence: read back immediately after insert
-  const verifyRows = db.prepare('SELECT id, task, date, time FROM todos WHERE plan_history_id = ?').all(planHistoryId) as any[];
-  console.log(`[DB] VERIFY — planHistoryId=${planHistoryId} has ${verifyRows.length} todos in DB:`, verifyRows.map((r: any) => r.task).join(', '));
+  // Compound reminder: for any todo with reminder_minutes, create a DB reminder row
+  // scheduled at task.scheduled_at - reminder_minutes (using Luxon for correct timezone math)
+  // Only create reminders for tasks that were actually inserted (not duplicates)
+  for (const todo of analysis.todos) {
+    // STRICT: ONLY create reminder if user explicitly requested it
+    const hasExplicitReminder =
+      (todo.reminder_minutes != null && todo.reminder_minutes > 0) ||
+      ((todo as any).reminder_at != null && (todo as any).reminder_at !== '');
+
+    if (!hasExplicitReminder) {
+      console.log('[PlanStore] Skipping reminder for:', todo.task, '— not explicitly requested by user');
+      continue;
+    }
+
+    if (todo.reminder_minutes && todo.reminder_minutes > 0 && todo.id && insertedTodoIds.has(todo.id)) {
+      const todoDate = todo.date || getKzToday();
+      const taskDatetime = todo.datetime || (todo.time ? kzLocalToUTC(todoDate, todo.time) : null);
+      if (!taskDatetime) continue;
+
+      console.log('[PlanStore] Creating reminder for:', todo.task, '| minutes:', todo.reminder_minutes, '| at:', (todo as any).reminder_at);
+
+      // Calculate reminder fire time in local timezone, then convert to UTC
+      // Never mix UTC and local DateTime objects in the same calculation
+      const taskLocalTime = DateTime.fromISO(taskDatetime, { zone: 'utc' }).setZone('Asia/Almaty');
+      if (!taskLocalTime.isValid) continue;
+
+      const reminderFireLocal = taskLocalTime.minus({ minutes: todo.reminder_minutes });
+      if (reminderFireLocal.toMillis() <= DateTime.now().toMillis()) continue;
+
+      const reminderFireUTC = reminderFireLocal.toUTC().toISO()!;
+
+      // Ensure FK row exists
+      db.prepare(`
+        INSERT OR IGNORE INTO plans (chat_id, user_id, title, summary, key_points, tags, language, created_at)
+        VALUES (?, ?, '', '', '[]', '[]', ?, datetime('now'))
+      `).run(chatId, userId, analysis.language);
+
+      const reminderId = insertReminder(userId, chatId, todo.task, reminderFireUTC, todo.id, todo.reminder_minutes);
+
+      logger.debug({ taskId: todo.id, reminderId, reminderMinutes: todo.reminder_minutes, reminderAt: reminderFireUTC }, '[PlanStore] Created compound reminder');
+    }
+  }
 }
 
 export function getPlan(chatId: number): StoredPlan | undefined {
@@ -301,10 +450,7 @@ export function getPlan(chatId: number): StoredPlan | undefined {
 }
 
 export function getUserTasks(userId: number): TodoItem[] {
-  console.log('[DB] Reading tasks for user:', userId);
-  console.log('[DB] DB path:', db.name);
   const rows = stmtGetAllTodosByUser.all(userId) as any[];
-  console.log('[DB] Row count:', rows.length);
   return rows.map(todoFromRow);
 }
 
@@ -318,8 +464,11 @@ export function getTasksFiltered(userId: number, filters: {
   source?: TaskSource | null;
   includeDone?: boolean;
 }): TodoItem[] {
-  let query = 'SELECT * FROM todos WHERE user_id = ?';
+  let query = 'SELECT DISTINCT * FROM todos WHERE user_id = ?';
   const params: any[] = [userId];
+
+  // Exclude reminder-type entries — only real tasks
+  query += ' AND (is_reminder IS NULL OR is_reminder = 0)';
 
   if (!filters.includeDone) {
     query += ' AND done = 0';
@@ -354,11 +503,12 @@ export function getTasksFiltered(userId: number, filters: {
     params.push(filters.source);
   }
 
-  console.log('[DB] Reading tasks for user:', userId, 'date:', filters.date);
-  console.log('[DB] DB path:', db.name);
   query += ' ORDER BY date ASC, time ASC';
   const rows = db.prepare(query).all(...params) as any[];
-  console.log('[DB] Row count:', rows.length);
+
+  // Log row count for debugging duplicate issues
+  console.log('[getTasksFiltered] Rows from DB:', rows.length, '| date:', filters.date, '| dateFrom:', filters.dateFrom, '| dateTo:', filters.dateTo);
+
   return rows.map(todoFromRow);
 }
 
@@ -369,20 +519,24 @@ export function completeTask(chatId: number, taskId: string, done: boolean): Tod
 }
 
 export function rescheduleTask(chatId: number, taskId: string, newTime: string, newDate?: string): TodoItem | undefined {
+  const oldRow = stmtGetTodoById.get(taskId) as any;
   const newDatetime = newDate && newTime ? kzLocalToUTC(newDate, newTime) : null;
   const scheduledTimeKz = buildScheduledTimeKz(newDate || null, newTime);
   db.prepare("UPDATE todos SET time = ?, datetime = ?, date = ?, scheduled_time_kz = ? WHERE id = ? AND chat_id = ?")
     .run(newTime, newDatetime || null, newDate || null, scheduledTimeKz, taskId, chatId);
   const row = stmtGetTodoById.get(taskId) as any;
+  console.log('[Reschedule] Task updated:', oldRow?.task, 'old time:', oldRow?.time, '→ new time:', newTime, 'triggered by: rescheduleTask');
   return row ? todoFromRow(row) : undefined;
 }
 
 export function updateTaskDateTime(userId: number, taskId: string, newDate: string, newTime: string): TodoItem | undefined {
+  const oldRow = stmtGetTodoById.get(taskId) as any;
   const newDatetime = kzLocalToUTC(newDate, newTime);
   const scheduledTimeKz = buildScheduledTimeKz(newDate, newTime);
   db.prepare("UPDATE todos SET time = ?, date = ?, datetime = ?, scheduled_time_kz = ? WHERE id = ? AND user_id = ?")
     .run(newTime, newDate, newDatetime, scheduledTimeKz, taskId, userId);
   const row = stmtGetTodoById.get(taskId) as any;
+  console.log('[Reschedule] Task updated:', oldRow?.task, 'old time:', oldRow?.time, '→ new time:', newTime, 'triggered by: updateTaskDateTime');
   return row ? todoFromRow(row) : undefined;
 }
 
@@ -489,7 +643,11 @@ export function getAllPlansForLLM(userId: number): string {
   })), null, 2);
 }
 
-export function addTodoToPlan(chatId: number, userId: number, task: string, time: string, priority: string, date: string, source: TaskSource = 'manual'): TodoItem {
+export function addTodoToPlan(
+  chatId: number, userId: number, task: string, time: string,
+  priority: string, date: string, source: TaskSource = 'manual',
+  skipConflictCheck: boolean = false,
+): TodoItem | { conflict: Conflict; pendingTodo: TodoItem } {
   const todoDate = date || getKzToday();
   const todo: TodoItem = {
     id: DateTime.now().toMillis().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -521,6 +679,14 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
     return dup ? todoFromRow(dup) : todo;
   }
 
+  // Conflict detection (unless skipped — e.g. user already chose to keep/replace)
+  if (!skipConflictCheck && todo.time) {
+    const conflicts = detectTimeConflicts(userId, [todo], today);
+    if (conflicts.length > 0) {
+      return { conflict: { newTodo: todo, existingTodo: conflicts[0].existingTodo }, pendingTodo: todo };
+    }
+  }
+
   // Find existing plan or create one
   let planId: number | null = null;
   const existingPlan = stmtFindPlanByDate.get(userId, today) as any;
@@ -544,8 +710,36 @@ export function addTodoToPlan(chatId: number, userId: number, task: string, time
 
   // Verify persistence
   const verify = db.prepare('SELECT id, task FROM todos WHERE id = ?').get(todo.id) as any;
-  console.log(`[DB] addTodoToPlan — "${task}" at ${time} for ${today} | planId=${planId} | verified=${!!verify}`);
+  logger.debug(`[DB] addTodoToPlan — "${task}" at ${time} for ${today} | planId=${planId} | verified=${!!verify}`);
   return todo;
+}
+
+/** Insert a todo directly, bypassing all checks (for conflict resolution: keep both / replace) */
+export function forceInsertTodo(
+  chatId: number, userId: number, todo: TodoItem, planId?: number,
+) {
+  const todoDate = todo.date || getKzToday();
+  if (!planId) {
+    const existingPlan = stmtFindPlanByDate.get(userId, todoDate) as any;
+    if (existingPlan) {
+      planId = existingPlan.id;
+    } else {
+      const result = stmtInsertPlanHistory.run(
+        chatId, userId,
+        `Plan for ${todoDate}`, '', '[]', '[]',
+        'en', 'day', todoDate, todoDate
+      );
+      planId = result.lastInsertRowid as number;
+    }
+  }
+
+  stmtInsertTodo.run(
+    todo.id, chatId, userId, todo.task, todo.priority || 'medium',
+    todo.done ? 1 : 0, todo.time || null, todo.datetime || null, todo.date || null,
+    todo.duration ?? 30, todo.location || null, todo.source || 'manual', planId,
+    buildScheduledTimeKz(todoDate, todo.time || null)
+  );
+  logger.debug(`[DB] forceInsertTodo — "${todo.task}" at ${todo.time} for ${todoDate}`);
 }
 
 export function findTasksByName(userId: number, text: string): { plan: StoredPlan; todo: TodoItem }[] {

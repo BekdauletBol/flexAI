@@ -23,6 +23,12 @@ export async function transcribeAudio(filePath: string): Promise<string> {
     const fileSize = fs.statSync(filePath).size;
     logger.info(`[Whisper] Transcribing audio (${(fileSize / 1024).toFixed(1)} KB) via Groq Whisper...`);
 
+    // Guard: file too small (< 1 KB) is likely empty/corrupt
+    if (fileSize < 1000) {
+      console.error('[Whisper] File too small:', fileSize, 'bytes');
+      throw new Error('Audio file too short');
+    }
+
     const response = await groq.audio.transcriptions.create({
       file: fs.createReadStream(filePath),
       model: 'whisper-large-v3',
@@ -30,6 +36,7 @@ export async function transcribeAudio(filePath: string): Promise<string> {
     });
 
     const transcript = response.text.trim();
+    console.log('[Whisper] Success:', transcript.length, 'chars');
 
     if (!transcript) {
       throw new Error('Empty transcription result');
@@ -37,7 +44,12 @@ export async function transcribeAudio(filePath: string): Promise<string> {
 
     logger.info(`[Whisper] Done (${transcript.length} chars): "${transcript.substring(0, 80)}..."`);
     return transcript;
-  } catch (error) {
+  } catch (error: any) {
+    console.error('[Whisper] Failed:', error?.status, error?.message);
+    try {
+      const fileSize = fs.statSync(filePath).size;
+      console.error('[Whisper] File size:', fileSize, 'bytes');
+    } catch {}
     logger.error(error, '[Whisper Service] Error:');
     throw new Error('Failed to transcribe audio');
   }

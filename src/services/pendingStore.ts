@@ -2,6 +2,7 @@ import { AnalysisResult, TodoItem, TaskSource } from '../types/analysis.js';
 import { Conflict } from './planStore.js';
 import { v4 as uuidv4 } from 'uuid';
 import { DateTime } from 'luxon';
+import { getKzToday } from '../utils/timezone.js';
 
 export interface PendingVoiceNote {
   id: string;
@@ -203,6 +204,93 @@ export function getRescheduleState(userId: number): RescheduleState | undefined 
 
 export function clearRescheduleState(userId: number) {
   rescheduleStates.delete(userId);
+}
+
+// ─── Per-Day Bot Memory ──────────────────────────────────────────────────────
+
+export interface DayMemory {
+  date: string;              // 'YYYY-MM-DD'
+  tasks: TodoItem[];         // all tasks for that day (refreshed from DB)
+  pendingConflict: TodoItem | null;  // task waiting for user decision
+  lastAskedDate: string;     // last date user asked about
+  lastAskedAt: number;       // timestamp of last ask (for 5-min freshness)
+}
+
+const dayMemory = new Map<number, DayMemory>();
+
+/** Get or initialize per-day memory for a user */
+export function getDayMemory(userId: number): DayMemory {
+  const existing = dayMemory.get(userId);
+  const today = getKzToday();
+  if (existing && existing.date === today) {
+    return existing;
+  }
+  // Initialize fresh for today
+  const mem: DayMemory = {
+    date: today,
+    tasks: [],
+    pendingConflict: null,
+    lastAskedDate: today,
+    lastAskedAt: DateTime.now().toMillis(),
+  };
+  dayMemory.set(userId, mem);
+  return mem;
+}
+
+/** Refresh tasks from DB into day memory */
+export function refreshDayMemory(userId: number, tasks: TodoItem[], date?: string): DayMemory {
+  const mem = getDayMemory(userId);
+  const targetDate = date || mem.date;
+  if (date) {
+    mem.date = date;
+    mem.lastAskedDate = date;
+    mem.lastAskedAt = DateTime.now().toMillis();
+  }
+  mem.tasks = tasks;
+  dayMemory.set(userId, mem);
+  return mem;
+}
+
+/** Set pending conflict in day memory */
+export function setPendingConflict(userId: number, todo: TodoItem | null): void {
+  const mem = getDayMemory(userId);
+  mem.pendingConflict = todo;
+  dayMemory.set(userId, mem);
+}
+
+/** Get the effective target date: if lastAskedDate was set within 5 minutes, use it; else today */
+export function getEffectiveDate(userId: number): string {
+  const mem = getDayMemory(userId);
+  const fiveMinAgo = DateTime.now().toMillis() - 5 * 60 * 1000;
+  if (mem.lastAskedAt > fiveMinAgo && mem.lastAskedDate) {
+    return mem.lastAskedDate;
+  }
+  return getKzToday();
+}
+
+/** Record that user asked about a date */
+export function recordAskedDate(userId: number, date: string): void {
+  const mem = getDayMemory(userId);
+  mem.lastAskedDate = date;
+  mem.lastAskedAt = DateTime.now().toMillis();
+  dayMemory.set(userId, mem);
+}
+
+/** Build context block for AI prompt from day memory */
+export function buildScheduleContext(userId: number): string {
+  const mem = getDayMemory(userId);
+  const tasks = mem.tasks;
+  if (tasks.length === 0) {
+    return `Current date: ${mem.date} (Asia/Almaty)\nUser's schedule today: (empty)\nConflicts today: 0`;
+  }
+
+  const taskLines = tasks.map(t => {
+    const time = t.time || '—:——';
+    const src = t.source || 'manual';
+    return `- ${t.task} at ${time} (${src})`;
+  }).join('\n');
+
+  return `Current date: ${mem.date} (Asia/Almaty)\nUser's schedule today:\n${taskLines}\nConflicts today: ${mem.pendingConflict ? 1 : 0}`;
 }
 
 // Cleanup task (runs every minute)

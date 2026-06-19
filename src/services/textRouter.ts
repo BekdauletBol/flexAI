@@ -159,7 +159,7 @@ export async function handleTextMessage(ctx: Context, text: string) {
             { caption: 'Report', reply_markup: getNavKeyboard(userLang) },
           );
         } catch (err: any) {
-          console.error('[PDF] Generation failed:', err.message, err.stack);
+          logger.error('[PDF] Generation failed:', err.message, err.stack);
           try {
             await ctx.api.editMessageText(chatId, waitMsg.message_id,
               `[PDF] ${err.message}`,

@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { transcribeAudio } from "../services/whisper.js";
 import { analyzeTranscript } from "../services/analysis.js";
 import { DateTime } from 'luxon';
+import { kzLocalToUTC } from '../utils/timezone.js';
 
 const KZ_ZONE = 'Asia/Almaty';
 import {
@@ -29,7 +30,9 @@ import {
   getKzToday,
   getKzTomorrow,
   findFreeTimeGaps,
+  getFreeTimeAndBreaks,
   prepareReportTasks,
+  forceInsertTodo,
   dedupeReportTasks,
 } from "../services/planStore.js";
 import { getUserConfig, setUserLanguage } from "../services/userConfig.js";
@@ -54,6 +57,10 @@ import {
   isAwaitingVoiceFollowup,
   getAwaitingVoiceFollowup,
   clearAwaitingVoiceFollowup,
+  getDayMemory,
+  refreshDayMemory,
+  setPendingConflict,
+  recordAskedDate,
 } from "../services/pendingStore.js";
 import {
   buildConflictMessage,
@@ -62,6 +69,7 @@ import {
   getCombinedConflictKeyboard,
   getSingleConflictKeyboard,
   getNavKeyboard,
+  buildFreeTimeMessage,
 } from "../services/messages.js";
 import { startDeliveryFlow } from "../services/delivery.js";
 import {
@@ -97,9 +105,43 @@ import fs from "fs";
 import path from "path";
 import https from "https";
 import http from "http";
+import { logger } from "../logger.js";
 
 // ─── Compound command helpers ─────────────────────────────
 const pendingSecondaryActions = new Map<number, { reminderMinutes?: number }>();
+
+// Pending time update flow: user replied to "В какое время?" with a time
+interface PendingTimeUpdate {
+  tasks: TodoItem[];
+  askedAt: string;
+  step: number;
+}
+const pendingTimeUpdate = new Map<number, PendingTimeUpdate>();
+
+function extractWordTime(text: string): string | null {
+  const map: Record<string, string> = {
+    'час': '13:00', 'в час': '13:00',
+    'два': '14:00', 'в два': '14:00',
+    'три': '15:00', 'в три': '15:00',
+    'четыре': '16:00', 'в четыре': '16:00',
+    'пять': '17:00', 'в пять': '17:00',
+    'шесть': '18:00', 'в шесть': '18:00',
+    'семь': '19:00', 'в семь': '19:00',
+    'восемь': '08:00', 'в восемь': '08:00',
+    'девять': '09:00', 'в девять': '09:00',
+    'десять': '10:00', 'в десять': '10:00',
+    'одиннадцать': '11:00', 'в одиннадцать': '11:00',
+    'двенадцать': '12:00', 'в двенадцать': '12:00',
+  };
+  const lower = text.toLowerCase().trim();
+  // Exact match first
+  if (map[lower]) return map[lower];
+  // Partial match: "в час" or "в два" etc
+  for (const [key, val] of Object.entries(map)) {
+    if (lower.includes(key)) return val;
+  }
+  return null;
+}
 
 function extractReminderFromTranscript(text: string): number | null {
   const lower = text.toLowerCase();
@@ -260,7 +302,7 @@ async function applyPendingReminder(
       await ctx.reply(getReminderLabel(pending.reminderMinutes, lang));
     }
   } catch (e) {
-    console.error("[Compound] Failed to apply reminder:", e);
+    logger.error("[Compound] Failed to apply reminder: %s", e);
   }
   pendingSecondaryActions.delete(userId);
 }
@@ -664,11 +706,11 @@ export async function handleVoice(ctx: Context) {
     const detectedLang = detectTranscriptLanguage(transcript);
     // Priority: explicit /language choice, then dominant spoken language, then English
     const lang = configuredLang || detectedLang || "en";
-    console.log("[Voice] Language:", {
+    logger.debug({
       configured: configuredLang,
       detected: detectedLang,
       used: lang,
-    });
+    }, "[Voice] Language:");
 
     // Clean up expired pending image data
     for (const [uid, data] of pendingImageTasks) {
@@ -796,7 +838,7 @@ export async function handleVoice(ctx: Context) {
         });
 
         const formattedTime = triggerDt.toFormat('HH:mm');
-        console.log(`[Reminder] Saved (confirmed): userId=${userId}, task="${taskName}", at=${scheduledAtUtc}`);
+        logger.debug(`[Reminder] Saved (confirmed): userId=${userId}, task="${taskName}", at=${scheduledAtUtc}`);
 
         await ctx.reply(
           lang === "ru"
@@ -845,30 +887,14 @@ export async function handleVoice(ctx: Context) {
         "Analyzing...",
       );
     } catch {}
-    const override = quickIntentOverride(transcript);
-    const intentResult = override ?? (await detectIntent(transcript, userId));
-    console.log("[DEBUG] Transcript:", transcript.substring(0, 150));
-    console.log("[DEBUG] Intent result:", JSON.stringify(intentResult));
 
-    // Auto-update memory
-    try {
-      const currentMem = JSON.stringify(getUserMemory(userId));
-      const memUpdateRaw = await extractMemoryUpdate(transcript, currentMem);
-      if (memUpdateRaw) {
-        const parsed = JSON.parse(memUpdateRaw);
-        if (parsed.should_update) {
-          updateUserMemory(userId, parsed.memory_update);
-        }
-      }
-    } catch (e) {
-      console.error("[Voice] Memory update error:", e);
-    }
+    // ── Process through shared pipeline ──
+    const result = await processTextInput(transcript, ctx, userId, lang, statusMsg);
+    if (result === 'pending_time_handled') return;
 
-    await routeByIntent(intentResult, ctx, userId, transcript, statusMsg, lang);
-
-    console.log(`[Voice] Done: ${intentResult.intent} from @${username}`);
+    logger.debug(`[Voice] Done: from @${username}`);
   } catch (error) {
-    console.error("[Voice] Error:", error);
+    logger.error("[Voice] Error: %s", error);
     const msg = error instanceof Error ? error.message : "";
     try {
       if (msg.includes("Failed to transcribe")) {
@@ -923,7 +949,7 @@ export async function handlePlanIntent(
   try {
     analysis = await analyzeTranscript(transcript, userId);
   } catch (e) {
-    console.error("[Voice] Analysis failed:", e);
+    logger.error("[Voice] Analysis failed: %s", e);
     const msg = e instanceof Error ? e.message : "";
     if (msg.startsWith("TRANSCRIPT_FALLBACK:")) {
       const t = msg.substring("TRANSCRIPT_FALLBACK:".length);
@@ -959,10 +985,7 @@ export async function handlePlanIntent(
   analysis.todos = analysis.todos.filter((todo) => {
     const taskNameLower = todo.task.toLowerCase();
     if (deleteKeywords.some((kw) => taskNameLower.includes(kw))) {
-      console.warn(
-        "[Action] Skipping suspicious task that looks like a delete command:",
-        todo.task,
-      );
+      logger.warn("[Action] Skipping suspicious task that looks like a delete command: %s", todo.task);
       return false;
     }
     return true;
@@ -1018,23 +1041,69 @@ export async function handlePlanIntent(
         analysis.language,
       );
     } catch (err) {
-      console.error("[Voice] Location assistant error:", err);
+      logger.error("[Voice] Location assistant error: %s", err);
     }
   }
 
-  // Conflict detection — collect all conflicts
-  const conflicts = ctx.from ? getConflicts(userId, analysis.todos) : [];
+  // Conflict detection — collect all conflicts (date-aware)
+  const targetDate = analysis.todos[0]?.date || getKzToday();
+  const conflicts = ctx.from ? getConflicts(userId, analysis.todos, targetDate) : [];
+
+  // Pattern-based conflict detection: compare new tasks against known daily patterns
+  const patterns = getUserMemory(userId).patterns;
+  const patternWarnings: string[] = [];
+  if (Object.keys(patterns).length > 0) {
+    for (const todo of analysis.todos) {
+      if (!todo.time) continue;
+      const newMinutes = parseTimeToMinutes(todo.time);
+
+      for (const [patternName, patternTime] of Object.entries(patterns)) {
+        if (!patternTime) continue;
+
+        // Parse pattern time: could be "08:00-10:00" (range) or "22:00" (single)
+        const rangeMatch = patternTime.match(/^(\d{2}:\d{2})\s*[-–]\s*(\d{2}:\d{2})$/);
+        if (rangeMatch) {
+          const rangeStart = parseTimeToMinutes(rangeMatch[1]);
+          const rangeEnd = parseTimeToMinutes(rangeMatch[2]);
+          const todoEnd = newMinutes + (todo.duration || 30);
+
+          if (newMinutes < rangeEnd && todoEnd > rangeStart) {
+            const patternLabel = lang === 'ru'
+              ? `У тебя обычно ${getPatternLabel(patternName, lang)} в ${patternTime}`
+              : lang === 'kk'
+                ? `Әдетте ${getPatternLabel(patternName, lang)} ${patternTime} болады`
+                : `You usually have ${getPatternLabel(patternName, lang)} at ${patternTime}`;
+            patternWarnings.push(`⚠️ ${patternLabel}. Конфликт?`);
+          }
+        }
+      }
+    }
+  }
+
+  // Show pattern warnings before conflict flow
+  if (patternWarnings.length > 0) {
+    await ctx.reply(patternWarnings.join('\n\n'));
+  }
 
   // Separate conflicting vs clean tasks
   const conflictedIds = new Set(conflicts.map((c) => c.newTodo.id));
   const cleanTodos = analysis.todos.filter((t) => !conflictedIds.has(t.id));
   const conflictTodos = analysis.todos.filter((t) => conflictedIds.has(t.id));
 
-  // Save non-conflicting tasks immediately
-  if (ctx.chat && cleanTodos.length > 0) {
+  // Save non-conflicting tasks immediately (only when there ARE conflicts — otherwise the single save at the end handles it)
+  if (conflicts.length > 0 && ctx.chat && cleanTodos.length > 0) {
     const cleanAnalysis = { ...analysis, todos: cleanTodos };
     savePlan(ctx.chat.id, userId, cleanAnalysis, 'voice');
   }
+
+  // Refresh per-day memory with all tasks for this date
+  const allTasksForDate = getUserTasks(userId).filter(t => !t.done);
+  refreshDayMemory(userId, allTasksForDate, targetDate);
+  if (conflicts.length > 0) {
+    setPendingConflict(userId, conflicts[0].newTodo);
+  }
+
+  recordAskedDate(userId, targetDate);
 
   const pendingData = {
     userId,
@@ -1072,6 +1141,27 @@ export async function handlePlanIntent(
 
   if (ctx.chat) {
     savePlan(ctx.chat.id, userId, analysis, 'voice');
+
+    // Prompt for time on untimed tasks
+    const untimedTasks = analysis.todos.filter((t: TodoItem) => !t.time);
+    console.log('[Plan] Untimed tasks:', untimedTasks.map((t: TodoItem) => t.task));
+    if (untimedTasks.length > 0 && analysis.timeframe === 'day') {
+      const names = untimedTasks.map((t: TodoItem) => `— ${t.task}`).join('\n');
+      const promptMsg = lang === 'ru'
+        ? `⚠️ Не указано время для:\n${names}\n\nВ какое время?`
+        : lang === 'kk'
+          ? `⚠️ Уақыты көрсетілмеген:\n${names}\n\nҚай уақытта?`
+          : `⚠️ No time set for:\n${names}\n\nWhat time?`;
+      await ctx.reply(promptMsg);
+
+      // Store pending state so follow-up voice/text can set times
+      pendingTimeUpdate.set(userId, {
+        tasks: untimedTasks,
+        askedAt: DateTime.now().toUTC().toISO()!,
+        step: 0,
+      });
+    }
+
     if (analysis.timeframe === "day") {
       const timedTasks = analysis.todos.filter((t) => t.time);
       if (timedTasks.length > 0) {
@@ -1110,7 +1200,7 @@ export async function handlePlanIntent(
           ? `Дайын! ${tfLabel} жоспары сақталды: "${analysis.title}"`
           : `Done! Saved ${tfLabel} plan: "${analysis.title}"`;
     await ctx.reply(msg);
-    console.log(
+    logger.debug(
       `[Voice] Long-term plan saved: "${analysis.title}" [${analysis.timeframe}]`,
     );
     return;
@@ -1123,7 +1213,7 @@ export async function handlePlanIntent(
     createdAt: DateTime.now().toMillis(),
   });
 
-  console.log(
+  logger.debug(
     `[Voice] Plan processed: "${analysis.title}" [${analysis.language}]`,
   );
 }
@@ -1159,9 +1249,25 @@ async function handleRescheduleIntent(
   let targetTime = intentResult.target_time;
   let targetDate = intentResult.target_date;
 
+  // Validate time format: must be HH:MM with hours 00-23 and minutes 00-59
+  if (targetTime) {
+    const timeMatch = targetTime.match(/^(\d{2}):(\d{2})$/);
+    if (!timeMatch) {
+      logger.warn('[Reschedule] Invalid time format from LLM: "%s" — ignoring', targetTime);
+      targetTime = null;
+    } else {
+      const h = parseInt(timeMatch[1]);
+      const m = parseInt(timeMatch[2]);
+      if (h > 23 || m > 59) {
+        logger.warn('[Reschedule] Invalid time value from LLM: "%s" (h=%d, m=%d) — ignoring', targetTime, h, m);
+        targetTime = null;
+      }
+    }
+  }
+
   // Fallback: if LLM intent didn't extract task/time, call extractRescheduleInfo
   if (!taskQuery && transcript) {
-    console.log(
+    logger.debug(
       "[Reschedule] target_task missing, running extractRescheduleInfo...",
     );
     const extracted = await extractRescheduleInfo(transcript, userId);
@@ -1169,7 +1275,7 @@ async function handleRescheduleIntent(
       taskQuery = extracted.task || taskQuery;
       targetTime = extracted.newTime || targetTime;
       targetDate = extracted.date || targetDate;
-      console.log(
+      logger.debug(
         `[Reschedule] Extracted: task="${taskQuery}" time="${targetTime}" date="${targetDate}"`,
       );
     }
@@ -1277,14 +1383,21 @@ async function handleRescheduleIntent(
   }
 
   if (found.todo.id) {
-    updateTaskDateTime(
-      userId,
-      found.todo.id,
-      targetDate || found.todo.date || "",
-      targetTime,
-    );
+    const newDate = targetDate || found.todo.date || "";
+    updateTaskDateTime(userId, found.todo.id, newDate, targetTime);
     cancelReminderByTaskId(found.todo.id);
-    if (ctx.chat) scheduleReminders(ctx.chat.id, userId, [found.todo], lang);
+
+    // Update linked DB reminders (parent_task_id)
+    const { updateLinkedReminders } = await import("../services/db.js");
+    const newScheduledAt = kzLocalToUTC(newDate, targetTime);
+    updateLinkedReminders(found.todo.id, newScheduledAt);
+
+    // Re-fetch task from DB to get updated time for the in-memory reminder
+    const refreshedTasks = getUserTasks(userId);
+    const refreshedTask = refreshedTasks.find((t) => t.id === found.todo.id);
+    if (ctx.chat && refreshedTask) {
+      scheduleReminders(ctx.chat.id, userId, [refreshedTask], lang);
+    }
     await applyPendingReminder(userId, found.todo.id, ctx, lang);
   }
 
@@ -1600,14 +1713,23 @@ export async function continueFlow(
       }
       const taskId = state.pendingTaskId;
       if (taskId) {
-        const tasks = getUserTasks(userId);
-        const task = tasks.find((t) => t.id === taskId);
-        if (task) {
-          updateTaskDateTime(userId, taskId, task.date || "", newTime);
-          cancelReminderByTaskId(taskId);
-          if (ctx.chat) scheduleReminders(ctx.chat.id, userId, [task], lang);
-          await applyPendingReminder(userId, taskId, ctx, lang);
+        // Get task from DB to find its current date
+        const allTasks = getUserTasks(userId);
+        const taskObj = allTasks.find((t) => t.id === taskId);
+        const taskDate = taskObj?.date || "";
+        updateTaskDateTime(userId, taskId, taskDate, newTime);
+        cancelReminderByTaskId(taskId);
+        // Update linked DB reminders
+        const { updateLinkedReminders } = await import("../services/db.js");
+        const newScheduledAt = kzLocalToUTC(taskDate, newTime);
+        updateLinkedReminders(taskId, newScheduledAt);
+        // Re-fetch task from DB to get updated time for the in-memory reminder
+        const refreshedTasks = getUserTasks(userId);
+        const refreshedTask = refreshedTasks.find((t) => t.id === taskId);
+        if (ctx.chat && refreshedTask) {
+          scheduleReminders(ctx.chat.id, userId, [refreshedTask], lang);
         }
+        await applyPendingReminder(userId, taskId, ctx, lang);
       }
       clearUserState(userId);
       await ctx.reply(
@@ -1659,6 +1781,7 @@ async function handleReminderIntent(
   intentResult: any,
   statusMsg: any,
   lang: string,
+  transcript?: string,
 ) {
   try {
     await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
@@ -1689,7 +1812,7 @@ async function handleReminderIntent(
     return;
   }
 
-  // Calculate scheduled time in UTC
+  // Calculate scheduled time: NOW + reminderMinutes (free-standing reminder, no task time)
   const { nowKZ } = await import("../utils/timezone.js");
   const kzNow = nowKZ();
   const scheduledAtKZ = kzNow.plus({ minutes: reminderMinutes });
@@ -1740,8 +1863,7 @@ async function handleReminderIntent(
   }
 
   // No conflicts — save directly
-  const { insertReminder: dbInsertReminder } = await import("../services/db.js");
-  const taskId = dbInsertReminder(userId, ctx.chat!.id, targetTask, scheduledAtUtc);
+  const taskId = insertReminder(userId, ctx.chat!.id, targetTask, scheduledAtUtc);
 
   // Schedule push notification
   const { reminders } = await import("../services/scheduler.js");
@@ -1757,7 +1879,7 @@ async function handleReminderIntent(
   });
 
   const formattedTime = scheduledAtKZ.toFormat('HH:mm');
-  console.log(`[Reminder] Saved: userId=${userId}, task="${targetTask}", at=${scheduledAtUtc}`);
+  logger.debug({ userId, task: targetTask, at: scheduledAtUtc }, '[Reminder] Saved');
 
   await ctx.reply(
     lang === "ru"
@@ -1884,31 +2006,28 @@ async function handleFreeTimeIntent(
   }
   if (!targetDate) targetDate = getKzToday();
 
-  const gaps = findFreeTimeGaps(userId, targetDate);
-  const dateLabel = DateTime.fromISO(targetDate, { zone: KZ_ZONE })
-    .setLocale(lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US")
-    .toFormat('cccc, d MMMM');
+  try {
+    const { getFreeTimeAndBreaks } = await import("../services/planStore.js");
+    const { buildFreeTimeMessage } = await import("../services/messages.js");
+    const { gaps, breaks } = getFreeTimeAndBreaks(userId, targetDate);
 
-  if (gaps.length === 0) {
+    const dateLabel = DateTime.fromISO(targetDate, { zone: KZ_ZONE })
+      .setLocale(lang === "ru" ? "ru-RU" : lang === "kk" ? "kk-KZ" : "en-US")
+      .toFormat('cccc, d MMMM');
+
+    const msg = buildFreeTimeMessage(dateLabel, gaps, breaks, lang);
+    console.log('[FreeTime] Sending response to user:', ctx.chat?.id);
+    await ctx.reply(msg);
+  } catch (err) {
+    logger.error('[FreeTime] Error calculating free time: %s', err);
     await ctx.reply(
       lang === "ru"
-        ? `На ${dateLabel} свободного времени (от 20 мин) не найдено.`
+        ? "Не удалось рассчитать свободное время."
         : lang === "kk"
-          ? `${dateLabel} 20 минуттан асатын бос уақыт табылмады.`
-          : `No free slots (20+ min) found for ${dateLabel}.`,
+          ? "Бос уақытты есептеу мүмкін болмады."
+          : "Could not calculate free time.",
     );
-    return;
   }
-
-  const gapStr = gaps.map((g) => `${g.start}–${g.end}`).join(", ");
-  const header =
-    lang === "ru"
-      ? `Свободное время (${dateLabel}):`
-      : lang === "kk"
-        ? `Бос уақыт (${dateLabel}):`
-        : `Free time (${dateLabel}):`;
-
-  await ctx.reply(`${header}\n${gapStr}`);
 }
 
 function buildReportSummary(
@@ -1933,6 +2052,109 @@ function buildReportSummary(
     .map((t) => `— ${t.task}${t.time ? ` · ${t.time}` : ""}${t.date ? ` · ${t.date}` : ""}`)
     .join("\n");
   return `${overdueHeader}\n${overdueLines}\n\n${base}`;
+}
+
+/**
+ * Shared handler for both text and voice input.
+ * Runs the core pipeline: pending time check → intent detection → memory update → routeByIntent.
+ */
+export async function processTextInput(
+  transcript: string,
+  ctx: Context,
+  userId: number,
+  lang: string,
+  statusMsg?: any,
+) {
+  // ── Pending time update: user is answering "В какое время?" ──
+  const pendingTime = pendingTimeUpdate.get(userId);
+  if (pendingTime && pendingTime.tasks.length > 0) {
+    if (DateTime.fromISO(pendingTime.askedAt).diffNow('minutes').minutes < -5) {
+      pendingTimeUpdate.delete(userId);
+    } else {
+      const timeMatch = transcript.match(/\b(\d{1,2})[.:](\d{2})\b/);
+      const wordTime = extractWordTime(transcript);
+      const extractedTime = timeMatch
+        ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
+        : wordTime;
+
+      if (!extractedTime) {
+        await ctx.reply(
+          lang === 'ru'
+            ? 'Напиши время, например "в 11 утра" или "14:30"'
+            : lang === 'kk'
+              ? 'Уақытты жаз, мысалы "таңғы 11" немесе "14:30"'
+              : 'Say the time, e.g. "at 11 am" or "14:30"',
+        );
+        return 'pending_time_handled';
+      }
+
+      const task = pendingTime.tasks[pendingTime.step];
+      const { db } = await import('../services/db.js');
+      const newScheduledAt = DateTime.fromObject(
+        {
+          year: parseInt(task.date!.split('-')[0]),
+          month: parseInt(task.date!.split('-')[1]),
+          day: parseInt(task.date!.split('-')[2]),
+          hour: parseInt(extractedTime.split(':')[0]),
+          minute: parseInt(extractedTime.split(':')[1]),
+        },
+        { zone: 'Asia/Almaty' },
+      ).toUTC().toISO()!;
+
+      db.prepare('UPDATE todos SET time = ?, datetime = ?, scheduled_time_kz = ? WHERE id = ?').run(
+        extractedTime,
+        newScheduledAt,
+        `${task.date}T${extractedTime}`,
+        task.id,
+      );
+
+      console.log('[PendingTime] Updated:', task.task, '→', extractedTime);
+      pendingTime.step++;
+
+      if (pendingTime.step < pendingTime.tasks.length) {
+        const nextTask = pendingTime.tasks[pendingTime.step];
+        await ctx.reply(
+          lang === 'ru'
+            ? `✅ ${task.task} → ${extractedTime}\n\nВ какое время "${nextTask.task}"?`
+            : lang === 'kk'
+              ? `✅ ${task.task} → ${extractedTime}\n\n"${nextTask.task}" қай уақытта?`
+              : `✅ ${task.task} → ${extractedTime}\n\nWhat time for "${nextTask.task}"?`,
+        );
+      } else {
+        pendingTimeUpdate.delete(userId);
+        await ctx.reply(
+          lang === 'ru'
+            ? `✅ ${task.task} → ${extractedTime}\n\nВсе времена указаны!`
+            : lang === 'kk'
+              ? `✅ ${task.task} → ${extractedTime}\n\nБарлық уақыттар көрсетілді!`
+              : `✅ ${task.task} → ${extractedTime}\n\nAll times set!`,
+        );
+      }
+      return 'pending_time_handled';
+    }
+  }
+
+  // ── Intent detection ──
+  const override = quickIntentOverride(transcript);
+  const intentResult = override ?? (await detectIntent(transcript, userId));
+
+  // ── Auto-update memory ──
+  try {
+    const currentMem = JSON.stringify(getUserMemory(userId));
+    const memUpdateRaw = await extractMemoryUpdate(transcript, currentMem);
+    if (memUpdateRaw) {
+      const parsed = JSON.parse(memUpdateRaw);
+      if (parsed.should_update) {
+        updateUserMemory(userId, parsed.memory_update);
+      }
+    }
+  } catch (e) {
+    logger.error("[Voice] Memory update error: %s", e);
+  }
+
+  // ── Route by intent ──
+  await routeByIntent(intentResult, ctx, userId, transcript, statusMsg, lang);
+  return 'routed';
 }
 
 export async function routeByIntent(
@@ -2014,11 +2236,19 @@ export async function routeByIntent(
     }
 
     case "report": {
-      console.log('[Report] intent received:', JSON.stringify(intentResult));
-      // Direct PDF generation from SQLite — no LLM needed
+      logger.debug("[Report] intent received: %s", JSON.stringify(intentResult));
+
+      // Determine report mode: default to today when no date specified
       const dateFrom = intentResult.date_from;
       const dateTo = intentResult.date_to;
-      const targetDate = intentResult.target_date || getKzToday();
+      let targetDate = intentResult.target_date;
+
+      // FIX: When no date is specified at all, default to today (not weekly/range)
+      if (!targetDate && !dateFrom) {
+        targetDate = DateTime.now().setZone(KZ_ZONE).toISODate()!;
+      }
+
+      console.log('[Report] Mode:', dateFrom && dateTo ? 'weekly' : 'daily', targetDate ?? dateFrom);
 
       try {
         await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
@@ -2030,13 +2260,17 @@ export async function routeByIntent(
 
       try {
         let pdfBuf: Buffer;
+        let dateLabel: string;
 
         if (dateFrom && dateTo) {
-          // Date range report (week / multi-day)
+          // Date range report (week / multi-day) — only when BOTH are explicitly set
           pdfBuf = await generateRangeReportPdf(userId, dateFrom, dateTo, lang);
+          dateLabel = `${dateFrom}_${dateTo}`;
         } else {
           // Single day report (default: today)
-          pdfBuf = await generateDailyReportPdf(userId, targetDate, lang);
+          const day = targetDate || getKzToday();
+          pdfBuf = await generateDailyReportPdf(userId, day, lang);
+          dateLabel = day;
         }
 
         try {
@@ -2044,11 +2278,11 @@ export async function routeByIntent(
         } catch {}
 
         await ctx.replyWithDocument(
-          new InputFile(pdfBuf, `report_${targetDate}_${DateTime.now().toMillis()}.pdf`),
+          new InputFile(pdfBuf, `report_${dateLabel}_${DateTime.now().toMillis()}.pdf`),
           { caption: "Report", reply_markup: getNavKeyboard(lang) },
         );
       } catch (err: any) {
-        console.error("[PDF] Generation failed:", err.message, err.stack);
+        logger.error("[PDF] Generation failed: %s %s", err.message, err.stack);
         try {
           await ctx.api.editMessageText(
             ctx.chat!.id,
@@ -2099,7 +2333,7 @@ export async function routeByIntent(
       break;
 
     case "reminder":
-      await handleReminderIntent(ctx, userId, intentResult, statusMsg, lang);
+      await handleReminderIntent(ctx, userId, intentResult, statusMsg, lang, transcript);
       break;
 
     case "list_reminders":
@@ -2110,6 +2344,24 @@ export async function routeByIntent(
       await handleCancelReminderIntent(ctx, userId, intentResult, statusMsg, lang);
       break;
   }
+}
+
+function parseTimeToMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function getPatternLabel(patternName: string, lang: string): string {
+  const labels: Record<string, Record<string, string>> = {
+    sleep_time: { ru: 'спишь', en: 'sleep', kk: 'ұйықтайсың' },
+    wake_up_time: { ru: 'просыпаешься', en: 'wake up', kk: 'оянасың' },
+    work_time: { ru: 'работаешь', en: 'work', kk: 'жұмыс істейсің' },
+    lunch_time: { ru: 'обедаешь', en: 'lunch', kk: 'түскі ас' },
+    dinner_time: { ru: 'ужинаешь', en: 'dinner', kk: 'кешкі ас' },
+    breakfast_time: { ru: 'завтракаешь', en: 'breakfast', kk: 'таңғы ас' },
+    gym_time: { ru: 'тренировка', en: 'gym', kk: 'жаттығу' },
+  };
+  return labels[patternName]?.[lang] || patternName;
 }
 
 function getTriggerTimeStr(time: string, offsetMinutes: number): string {
@@ -2146,6 +2398,7 @@ async function handleCommandIntent(
   const command = intentResult.command;
 
   if (command === "report" || command === "report_pdf") {
+    console.log('[Report] handleCommandIntent input:', JSON.stringify(intentResult));
     let dateRanges = intentResult.date_ranges;
     let hasMultiDate = Array.isArray(dateRanges) && dateRanges.length > 1;
     let hasDateRange = intentResult.date_from || intentResult.date_to;
@@ -2251,7 +2504,7 @@ async function handleCommandIntent(
           { caption: "Report", reply_markup: getNavKeyboard(lang) },
         );
       } catch (err) {
-        console.error("[Report] Multi-date PDF generation failed:", err);
+        logger.error("[Report] Multi-date PDF generation failed: %s", err);
         await ctx.api.editMessageText(
           ctx.chat!.id,
           waitMsg.message_id,
@@ -2263,16 +2516,18 @@ async function handleCommandIntent(
         );
       }
     } else {
-      if (hasPeriod && !hasDateRange && !intentResult.target_date) {
-        const kzNow = DateTime.now().setZone(KZ_ZONE);
-        const kzToday = getKzToday();
+      const kzNow = DateTime.now().setZone(KZ_ZONE);
+      const kzToday = getKzToday();
+
+      // Resolve period to explicit dates (only when period is explicitly set)
+      if (hasPeriod && !intentResult.target_date && !intentResult.date_from) {
         const period = intentResult.period;
         if (period === "today") {
           intentResult.target_date = kzToday;
         } else if (period === "tomorrow") {
           intentResult.target_date = getKzTomorrow();
         } else if (period === "week") {
-          const weekStart = kzNow.startOf('week'); // Monday
+          const weekStart = kzNow.startOf('week');
           const weekEnd = weekStart.plus({ days: 6 });
           intentResult.date_from = weekStart.toFormat('yyyy-MM-dd');
           intentResult.date_to = weekEnd.toFormat('yyyy-MM-dd');
@@ -2282,29 +2537,29 @@ async function handleCommandIntent(
           intentResult.date_from = monthStart.toFormat('yyyy-MM-dd');
           intentResult.date_to = monthEnd.toFormat('yyyy-MM-dd');
         }
-        hasDateRange = intentResult.date_from || intentResult.date_to;
+        hasDateRange = !!intentResult.date_from && !!intentResult.date_to;
         hasFilters = hasFilters || !!intentResult.target_date || hasDateRange;
       }
 
-      // Default single-day reports to today in KZ when no date specified
-      if (!hasFilters && !hasDateRange) {
-        intentResult.target_date = getKzToday();
-        hasFilters = true;
-      }
+      // FIX: Default to today when no date specified at all
+      const targetDate = intentResult.target_date || kzToday;
+      const hasRange = !!(intentResult.date_from && intentResult.date_to);
 
-      const targetDate = intentResult.target_date ?? null;
-      const rawTasks = hasFilters
-        ? getTasksFiltered(userId, {
-            date: targetDate,
-            beforeTime: intentResult.target_time ?? null,
-            afterTime: intentResult.after_time ?? null,
-            priority: intentResult.priority_filter ?? null,
-            dateFrom: intentResult.date_from ?? null,
-            dateTo: intentResult.date_to ?? null,
-            source: intentResult.source_filter ?? null,
-            includeDone: true,
-          })
-        : getTasksFiltered(userId, { date: getKzToday(), includeDone: true });
+      console.log('[Report] Mode:', hasRange ? 'weekly' : 'daily', targetDate);
+
+      const queryDateFrom = hasRange ? intentResult.date_from : null;
+      const queryDateTo = hasRange ? intentResult.date_to : null;
+
+      const rawTasks = getTasksFiltered(userId, {
+        date: hasRange ? null : targetDate,
+        beforeTime: intentResult.target_time ?? null,
+        afterTime: intentResult.after_time ?? null,
+        priority: intentResult.priority_filter ?? null,
+        dateFrom: queryDateFrom,
+        dateTo: queryDateTo,
+        source: intentResult.source_filter ?? null,
+        includeDone: true,
+      });
 
       const { tasks, overdue } = prepareReportTasks(rawTasks, targetDate);
       if (tasks.length === 0 && overdue.length === 0) {
@@ -2335,7 +2590,7 @@ async function handleCommandIntent(
           { caption: "Report", reply_markup: getNavKeyboard(lang) },
         );
       } catch (err: any) {
-        console.error("[PDF] Generation failed:", err.message, err.stack);
+        logger.error("[PDF] Generation failed: %s %s", err.message, err.stack);
         try {
           await ctx.api.editMessageText(
             ctx.chat!.id,
@@ -2375,7 +2630,7 @@ async function handleCommandIntent(
         { caption: "Weekly Report", reply_markup: getNavKeyboard(lang) },
       );
     } catch (err: any) {
-      console.error("[PDF] Generation failed:", err.message, err.stack);
+      logger.error("[PDF] Generation failed: %s %s", err.message, err.stack);
       try {
         await ctx.api.editMessageText(
           ctx.chat!.id,

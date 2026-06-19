@@ -5,6 +5,7 @@ import { getKzToday, getKzTomorrow } from './planStore.js';
 import { groq, GROQ_MODEL, hasGroq } from "./groq.js";
 import { getTemporalContext } from './userConfig.js';
 import { DateTime } from 'luxon';
+import { logger } from '../logger.js';
 
 const fallback = new OpenAI({
   apiKey: config.openaiApiKey,
@@ -188,13 +189,24 @@ function detectFreeTimeQuery(transcript: string): Partial<IntentResult> | null {
   if (!isFreeTimeQuestion) return null;
 
   const targetDate = parseTargetDateFromText(transcript) || getKzToday();
-  console.log('[Intent] Quick override → free_time_query', targetDate);
+  logger.debug({ targetDate }, '[Intent] Quick override → free_time_query');
   return { intent: 'free_time_query', confidence: 1.0, target_date: targetDate };
 }
 
 function detectReminderIntent(
   lower: string,
 ): Partial<IntentResult> | null {
+  // === Compound intent: time/event + reminder → "action" (not "reminder") ===
+  // If the transcript mentions BOTH a scheduled event AND a reminder request,
+  // classify as "action" so the full analysis pipeline extracts the task properly.
+  const hasReminder = /напомни|remind|предупреди|скажи\s+мне\s+через|напомнить/i.test(lower);
+  if (hasReminder) {
+    const hasTimeEvent = /в\s+\d{1,2}[:.]\d{2}|at\s+\d{1,2}[:.]\d{2}|будет|планирую|должен|scheduled|supposed\s+to|have\s+.*\d{1,2}[:.]\d{2}/i.test(lower);
+    if (hasTimeEvent) {
+      logger.debug('[Intent] Compound intent detected (event + reminder) → action');
+      return { intent: 'action', confidence: 1.0 };
+    }
+  }
   // === Pattern 1: "напомни за X минут/час(ов) до [task]" ===
   const ruBefore = /напомни\s+за\s+(\d+)\s+(минут(?:у|ы|а)?|час(?:а|ов|ы)?|полчаса)\s+до\s+(.+)$/i;
   const ruBeforeMatch = lower.match(ruBefore);
@@ -204,7 +216,7 @@ function detectReminderIntent(
     if (unit.startsWith("час")) minutes *= 60;
     else if (unit === "полчаса") minutes = 30;
     const targetTask = ruBeforeMatch[3].trim();
-    console.log('[Intent] Quick override → reminder', { minutes, targetTask });
+    logger.debug({ minutes, targetTask }, '[Intent] Quick override → reminder');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes, target_task: targetTask };
   }
 
@@ -217,7 +229,7 @@ function detectReminderIntent(
     if (unit.startsWith("час")) minutes *= 60;
     else if (unit === "полчаса") minutes = 30;
     const targetTask = ruThroughMatch[3]?.trim() || null;
-    console.log('[Intent] Quick override → reminder (free)', { minutes, targetTask });
+    logger.debug({ minutes, targetTask }, '[Intent] Quick override → reminder (free)');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes, target_task: targetTask || undefined };
   }
 
@@ -229,7 +241,7 @@ function detectReminderIntent(
     const unit = ruSayMatch[2].toLowerCase();
     if (unit.startsWith("час")) minutes *= 60;
     else if (unit === "полчаса") minutes = 30;
-    console.log('[Intent] Quick override → reminder (free)', { minutes });
+    logger.debug({ minutes }, '[Intent] Quick override → reminder (free)');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes };
   }
 
@@ -242,7 +254,7 @@ function detectReminderIntent(
     if (unit.startsWith("час")) minutes *= 60;
     else if (unit === "полчаса") minutes = 30;
     const targetTask = ruWarnMatch[3]?.trim() || null;
-    console.log('[Intent] Quick override → reminder', { minutes, targetTask });
+    logger.debug({ minutes, targetTask }, '[Intent] Quick override → reminder');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes, target_task: targetTask || undefined };
   }
 
@@ -254,7 +266,7 @@ function detectReminderIntent(
     const unit = ruSetMatch[2].toLowerCase();
     if (unit.startsWith("час")) minutes *= 60;
     else if (unit === "полчаса") minutes = 30;
-    console.log('[Intent] Quick override → reminder (free)', { minutes });
+    logger.debug({ minutes }, '[Intent] Quick override → reminder (free)');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes };
   }
 
@@ -267,7 +279,7 @@ function detectReminderIntent(
     const unit = ruAboutMatch[3].toLowerCase();
     if (unit.startsWith("час")) minutes *= 60;
     else if (unit === "полчаса") minutes = 30;
-    console.log('[Intent] Quick override → reminder', { minutes, targetTask });
+    logger.debug({ minutes, targetTask }, '[Intent] Quick override → reminder');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes, target_task: targetTask };
   }
 
@@ -276,7 +288,7 @@ function detectReminderIntent(
   const enInMatch = lower.match(enIn);
   if (enInMatch) {
     const minutes = parseInt(enInMatch[1], 10);
-    console.log('[Intent] Quick override → reminder (free)', { minutes });
+    logger.debug({ minutes }, '[Intent] Quick override → reminder (free)');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes };
   }
 
@@ -286,7 +298,7 @@ function detectReminderIntent(
   if (enAboutInMatch) {
     const targetTask = enAboutInMatch[1].trim();
     const minutes = parseInt(enAboutInMatch[2], 10);
-    console.log('[Intent] Quick override → reminder', { minutes, targetTask });
+    logger.debug({ minutes, targetTask }, '[Intent] Quick override → reminder');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes, target_task: targetTask };
   }
 
@@ -296,13 +308,13 @@ function detectReminderIntent(
   if (enBeforeMatch) {
     const targetTask = enBeforeMatch[1].trim();
     const minutes = parseInt(enBeforeMatch[2], 10);
-    console.log('[Intent] Quick override → reminder', { minutes, targetTask });
+    logger.debug({ minutes, targetTask }, '[Intent] Quick override → reminder');
     return { intent: 'reminder', confidence: 1.0, reminder_minutes: minutes, target_task: targetTask };
   }
 
   // === Pattern 10: "напомни" without time (will prompt for time) ===
   if (/^напомни$/i.test(lower.trim())) {
-    console.log('[Intent] Quick override → reminder (no time)');
+    logger.debug('[Intent] Quick override → reminder (no time)');
     return { intent: 'reminder', confidence: 0.8, reminder_minutes: 0 };
   }
 
@@ -347,7 +359,7 @@ export function quickIntentOverride(
     /қандай\s+еске\s+салулар/i,
   ];
   if (listRemindersPatterns.some(p => p.test(lower))) {
-    console.log('[Intent] Quick override → list_reminders');
+    logger.debug('[Intent] Quick override → list_reminders');
     return { intent: 'list_reminders', confidence: 1.0 };
   }
 
@@ -359,7 +371,7 @@ export function quickIntentOverride(
   );
   if (cancelReminderMatch) {
     const targetTask = cancelReminderMatch[1]?.trim() || null;
-    console.log('[Intent] Quick override → cancel_reminder', { targetTask });
+    logger.debug({ targetTask }, '[Intent] Quick override → cancel_reminder');
     return { intent: 'cancel_reminder', confidence: 1.0, target_task: targetTask || undefined };
   }
 
@@ -409,38 +421,38 @@ export function quickIntentOverride(
       "жоспарларымды көрсет",
     ];
     if (queryWords.some((w) => lower.includes(w))) {
-      console.log("[Intent] Quick override → query");
+      logger.debug("[Intent] Quick override → query");
       return { intent: "query", confidence: 1.0 };
     }
     return null;
   }
 
   // Report intent confirmed. Resolve date context from transcript using luxon.
-  console.log('[Report Override] transcript:', transcript);
+  logger.debug({ transcript }, '[Report Override] transcript');
   const now = DateTime.now().setZone('Asia/Almaty')
 
   // WEEK RANGES (loose regex — handles Whisper transcription noise)
   if (/эт\w*\s*недел|текущ\w*\s*недел|за\s*недел/.test(lower)) {
-    console.log('[Intent] Quick override → report this week');
+    logger.debug('[Intent] Quick override → report this week');
     return { intent: 'report', confidence: 1, date_from: now.startOf('week').toISODate()!, date_to: now.endOf('week').toISODate()! };
   }
   if (/прошл\w*\s*недел|прошедш\w*\s*недел/.test(lower)) {
     const last = now.minus({ weeks: 1 });
-    console.log('[Intent] Quick override → report last week');
+    logger.debug('[Intent] Quick override → report last week');
     return { intent: 'report', confidence: 1, date_from: last.startOf('week').toISODate()!, date_to: last.endOf('week').toISODate()! };
   }
 
   // RELATIVE DAYS (loose regex)
   if (/вчер\w*/.test(lower)) {
-    console.log('[Intent] Quick override → report yesterday');
+    logger.debug('[Intent] Quick override → report yesterday');
     return { intent: 'report', confidence: 1, target_date: now.minus({ days: 1 }).toISODate()! };
   }
   if (/позавчер\w*/.test(lower)) {
-    console.log('[Intent] Quick override → report day-before-yesterday');
+    logger.debug('[Intent] Quick override → report day-before-yesterday');
     return { intent: 'report', confidence: 1, target_date: now.minus({ days: 2 }).toISODate()! };
   }
   if (/сегодня|бугин|сейча/.test(lower) || !/недел|вчер|понедел|вторник|среду|четверг|пятниц|суббот|воскресен|\d{1,2}\s?(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)/.test(lower)) {
-    console.log('[Intent] Quick override → report today');
+    logger.debug('[Intent] Quick override → report today');
     return { intent: 'report', confidence: 1, target_date: now.toISODate()! };
   }
 
@@ -453,7 +465,7 @@ export function quickIntentOverride(
     if (re.test(lower)) {
       let target = now.set({ weekday: dayNum as 1 | 2 | 3 | 4 | 5 | 6 | 7 });
       if (target > now) target = target.minus({ weeks: 1 });
-      console.log('[Intent] Quick override → report weekday match:', re.source);
+      logger.debug({ weekday: re.source }, '[Intent] Quick override → report weekday match');
       return { intent: 'report', confidence: 1, target_date: target.toISODate()! };
     }
   }
@@ -469,12 +481,12 @@ export function quickIntentOverride(
     const day = parseInt(dateMatch[1]);
     const month = months[dateMatch[2]];
     const target = now.set({ month, day });
-    console.log('[Intent] Quick override → report specific date:', target.toISODate());
+    logger.debug({ targetDate: target.toISODate() }, '[Intent] Quick override → report specific date');
     return { intent: 'report', confidence: 1, target_date: target.toISODate()! };
   }
 
   // DEFAULT: today
-  console.log('[Intent] Quick override → report (default today)');
+  logger.debug('[Intent] Quick override → report (default today)');
   return {
     intent: 'report',
     confidence: 1.0,
@@ -535,12 +547,7 @@ function sanitizeIntentResult(result: IntentResult): void {
 }
 
 export async function detectIntent(transcript: string, userId?: number): Promise<IntentResult> {
-  console.log(
-    "[Intent] Starting detectIntent, model:",
-    MODEL,
-    "baseURL:",
-    config.openaiBaseUrl,
-  );
+  logger.debug({ model: MODEL, baseURL: config.openaiBaseUrl }, "[Intent] Starting detectIntent");
 
   // Get user-specific temporal context
   const temporal = getTemporalContext(userId || 0);
@@ -551,7 +558,7 @@ export async function detectIntent(transcript: string, userId?: number): Promise
 
   const systemPromptWithDate = `Today is ${dayOfWeek}, ${monthDay}, ${year} in ${temporal.timezone}. Current local time: ${temporal.localTime}. Today's date: ${temporal.localDate}.\n\n${SYSTEM_PROMPT}`;
 
-  console.log('[Intent Prompt]', systemPromptWithDate);
+  logger.debug('[Intent Prompt] %s', systemPromptWithDate);
 
   const messages = [
     { role: "system" as const, content: systemPromptWithDate },
@@ -573,36 +580,36 @@ export async function detectIntent(transcript: string, userId?: number): Promise
         60000,
       );
 
-      console.log("[Intent] Got response from", MODEL);
+      logger.debug({ model: MODEL }, "[Intent] Got response");
       const content = response.choices[0]?.message?.content;
       if (!content) throw new Error("Empty response");
 
-      console.log("[Intent] Response content:", content);
+      logger.debug({ content }, "[Intent] Response content");
       const result = JSON.parse(content) as IntentResult;
       result.intent = result.intent || "action";
       result.confidence = result.confidence || 0.5;
       sanitizeIntentResult(result);
 
-      console.log(
+      logger.debug(
         `[Intent] "${result.intent}" (${(result.confidence * 100).toFixed(0)}%)`,
       );
       return result;
     } catch (error: any) {
       if (error?.status === 429 && attempts < 2) {
         const wait = (attempts + 1) * 10000;
-        console.warn(`[Intent] Rate limited (${MODEL}), retrying in ${wait / 1000}s... (attempt ${attempts + 1}/3)`);
+        logger.warn(`[Intent] Rate limited (${MODEL}), retrying in ${wait / 1000}s... (attempt ${attempts + 1}/3)`);
         await new Promise(r => setTimeout(r, wait));
         attempts++;
         continue;
       }
-      console.error(`[Intent] ${MODEL} failed (attempt ${attempts + 1}/3):`, error?.message || error);
+      logger.error(`[Intent] ${MODEL} failed (attempt ${attempts + 1}/3):`, error?.message || error);
       break;
     }
   }
 
   // Fallback to gpt-4.1 via GitHub token
   if (MODEL !== 'gpt-4.1') {
-    console.log('[Intent] Falling back to gpt-4.1 for intent detection');
+    logger.debug('[Intent] Falling back to gpt-4.1 for intent detection');
     try {
       const response = await withTimeout(
         fallback.chat.completions.create({
@@ -618,18 +625,18 @@ export async function detectIntent(transcript: string, userId?: number): Promise
       const content = response.choices[0]?.message?.content;
       if (!content) throw new Error("Empty fallback response");
 
-      console.log("[Intent] Fallback response:", content);
+      logger.debug({ content }, "[Intent] Fallback response");
       const result = JSON.parse(content) as IntentResult;
       result.intent = result.intent || "action";
       result.confidence = result.confidence || 0.5;
       sanitizeIntentResult(result);
 
-      console.log(
+      logger.debug(
         `[Intent] fallback "${result.intent}" (${(result.confidence * 100).toFixed(0)}%)`,
       );
       return result;
     } catch (fallbackError) {
-      console.error("[Intent] Fallback also failed:", fallbackError);
+      logger.error({ err: fallbackError }, "[Intent] Fallback also failed");
     }
   }
 
@@ -662,7 +669,7 @@ export async function askQuestion(
     );
     return response.choices[0]?.message?.content || "...";
   } catch (error) {
-    console.error("[Intent] Question failed:", error);
+    logger.error({ err: error }, "[Intent] Question failed");
     return "Error getting answer.";
   }
 }
@@ -692,7 +699,7 @@ export async function chatReply(
     );
     return response.choices[0]?.message?.content || "...";
   } catch (error) {
-    console.error("[Intent] Chat failed:", error);
+    logger.error({ err: error }, "[Intent] Chat failed");
     return "...";
   }
 }
@@ -733,7 +740,7 @@ export async function extractRescheduleInfo(
     if (!content) return null;
     return JSON.parse(content) as RescheduleExtraction;
   } catch (error) {
-    console.error("[Intent] Reschedule extraction failed:", error);
+    logger.error({ err: error }, "[Intent] Reschedule extraction failed");
     return null;
   }
 }
@@ -774,7 +781,7 @@ export async function extractDeleteInfo(
     if (!content) return null;
     return JSON.parse(content) as DeleteExtraction;
   } catch (error) {
-    console.error("[Intent] Delete extraction failed:", error);
+    logger.error({ err: error }, "[Intent] Delete extraction failed");
     return null;
   }
 }
@@ -809,7 +816,7 @@ export async function extractViewInfo(
     if (!content) return null;
     return JSON.parse(content) as ViewExtraction;
   } catch (error) {
-    console.error("[Intent] View extraction failed:", error);
+    logger.error({ err: error }, "[Intent] View extraction failed");
     return null;
   }
 }
@@ -860,7 +867,7 @@ export async function extractReportInfo(
     if (!content) return null;
     return JSON.parse(content) as ReportExtraction;
   } catch (error) {
-    console.error("[Intent] Report extraction failed:", error);
+    logger.error({ err: error }, "[Intent] Report extraction failed");
     return null;
   }
 }
@@ -893,7 +900,7 @@ Only set should_update=true if there is genuinely new info worth remembering. Ot
     if (!content) return null;
     return content;
   } catch (error) {
-    console.error("[Intent] Memory update failed:", error);
+    logger.error({ err: error }, "[Intent] Memory update failed");
     return null;
   }
 }

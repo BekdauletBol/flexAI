@@ -96,7 +96,7 @@ export async function getWeatherForecast(lat: number, lng: number, datetime: str
     const data = await res.json() as any;
 
     if (data.cod !== 200) {
-      logger.error('[Location] Weather API error: %s', data.message);
+      logger.error('[Location] Weather API error: %s %s', data.message);
       return null;
     }
 
@@ -204,7 +204,7 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string> 
         return result.formatted_address || 'My Location';
       }
     } catch (e) {
-      console.warn('[Location] Google Reverse Geocode failed, trying fallback...', e);
+      logger.warn('[Location] Google Reverse Geocode failed, trying fallback... %s', String(e));
     }
   }
 
@@ -237,7 +237,7 @@ export async function geocodeCity(cityName: string): Promise<{ lat: number, lng:
         return data.results[0].geometry.location;
       }
     } catch (e) {
-      console.warn('[Location] Google Geocode failed:', e);
+      logger.warn('[Location] Google Geocode failed: %s', String(e));
     }
   }
 

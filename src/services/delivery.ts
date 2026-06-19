@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { InlineKeyboard } from 'grammy';
 import { generatePdf } from './pdf.js';
 import { DateTime } from 'luxon';
+import { logger } from '../logger.js';
 
 const KZ_ZONE = 'Asia/Almaty';
 
@@ -18,7 +19,7 @@ function fileName(): string {
 export async function startDeliveryFlow(ctx: Context, pending: PendingVoiceNote) {
   const analysis = pending.analysis;
   const lang = analysis.language;
-  
+
   // 1. Main Summary Message (as text, before the reminder loop)
   const summaryText = buildSummaryMessage(
     analysis.title,
@@ -28,9 +29,9 @@ export async function startDeliveryFlow(ctx: Context, pending: PendingVoiceNote)
     lang,
     DateTime.fromMillis(pending.createdAt)
   );
-  
+
   await ctx.reply(summaryText);
-  
+
   // Start Sequential Reminder Loop
   pending.reminderIndex = 0;
   await advanceReminderLoop(ctx, pending);
@@ -40,31 +41,30 @@ export async function advanceReminderLoop(ctx: Context, pending: PendingVoiceNot
   const analysis = pending.analysis;
   const lang = analysis.language;
   const userId = pending.userId;
-  
+
   const todos = pending.resolvedTodos || analysis.todos;
-  
+
   if (pending.reminderIndex === undefined) pending.reminderIndex = 0;
-  
+
   if (pending.reminderIndex < todos.length) {
     const currentTask = todos[pending.reminderIndex];
     const userSettings = getUserConfig(userId);
     const offset = userSettings.reminder_offset_minutes !== undefined ? userSettings.reminder_offset_minutes : 30;
-    
+
     const reminderText = buildSequentialReminderMessage(currentTask.task, lang);
     const reminderKeyboard = getSequentialReminderKeyboard(pending.id, offset, lang);
-    
+
     await ctx.reply(reminderText, { reply_markup: reminderKeyboard });
   } else {
     // Phase 3: Final Generation (All reminders set)
     const statusMsg = await ctx.reply('Generating final results...');
-    
+
     // Sync analysis to matched resolvedTodos (incorporates all reschedules/custom times)
     pending.analysis.todos = todos;
-    
-    let pdfBuf: Buffer | null = null;
-    const fn = fileName();
-    try { pdfBuf = await generatePdf(pending.analysis); } catch (e) { console.error('[Delivery] PDF generation failed:', e); }
-    
+
+    // Only generate PDF for meaningful plans: multiple tasks, or a single task with explicit time
+    const hasMeaningfulPlan = todos.length > 1 || (todos.length === 1 && !!todos[0].time);
+
     // Mini App keyboard logic
     let webAppKeyboard: InlineKeyboard | undefined;
     if (config.webappUrl && ctx.chat) {
@@ -76,19 +76,24 @@ export async function advanceReminderLoop(ctx: Context, pending: PendingVoiceNot
         webAppKeyboard = new InlineKeyboard().webApp(btnLabel, fullUrl);
       }
     }
-    
-    // Send PDF
-    if (pdfBuf) {
-      await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: analysis.title, reply_markup: webAppKeyboard });
-    } else {
-      // Fallback text if PDF fails
-      const txt = `# ${analysis.title}\n\n${analysis.summary}\n\n${analysis.key_points.map((p: string) => `- ${p}`).join('\n')}`;
-      await ctx.replyWithDocument(new InputFile(Buffer.from(txt, 'utf-8'), fn.replace('.pdf', '.txt')), { caption: analysis.title, reply_markup: webAppKeyboard });
+
+    if (hasMeaningfulPlan) {
+      let pdfBuf: Buffer | null = null;
+      const fn = fileName();
+      try { pdfBuf = await generatePdf(pending.analysis); } catch (e) { logger.error('[Delivery] PDF generation failed: %s', String(e)); }
+
+      if (pdfBuf) {
+        await ctx.replyWithDocument(new InputFile(pdfBuf, fn), { caption: analysis.title, reply_markup: webAppKeyboard });
+      } else if (webAppKeyboard) {
+        await ctx.reply(analysis.title, { reply_markup: webAppKeyboard });
+      }
+    } else if (webAppKeyboard) {
+      await ctx.reply(analysis.title, { reply_markup: webAppKeyboard });
     }
-    
+
     // Delete status msg
     try { await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
-    
+
     // Final completion message with Nav Keyboard
     if (lang === 'ru') {
       await ctx.reply('Все напоминания настроены.', { reply_markup: getNavKeyboard(lang) });

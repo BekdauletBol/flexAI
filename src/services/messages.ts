@@ -1,5 +1,5 @@
 import { InlineKeyboard } from "grammy";
-import { TodoItem, AnalysisResult } from "../types/analysis.js";
+import { TodoItem, AnalysisResult, TaskSource } from "../types/analysis.js";
 import { Conflict } from "./planStore.js";
 import { DateTime } from 'luxon';
 
@@ -11,6 +11,33 @@ function formatPriority(p: string): string {
   if (p === "high") return "High";
   if (p === "medium") return "Medium";
   return "Low";
+}
+
+/** Format minutes into human-readable duration: "30 мин", "1.5 ч", "2 ч" */
+export function formatDuration(minutes: number): string {
+  if (minutes < 60) return `${minutes} мин`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (m === 0) return `${h} ч`;
+  return `${h}.${Math.floor(m / 30)} ч`;
+}
+
+/** Format a UTC ISO datetime to HH:mm in KZ timezone */
+export function formatTimeKz(isoStr: string | null | undefined): string {
+  if (!isoStr) return '—:——';
+  const dt = DateTime.fromISO(isoStr, { zone: 'utc' }).setZone(KZ_ZONE);
+  return dt.isValid ? dt.toFormat('HH:mm') : '—:——';
+}
+
+/** Get localized source label */
+export function sourceLabel(source: TaskSource | string | undefined, lang: string): string {
+  if (lang === 'ru') {
+    if (source === 'voice') return 'голос';
+    if (source === 'teams') return 'Teams';
+    if (source === 'manual') return 'вручную';
+    return 'telegram';
+  }
+  return source || 'manual';
 }
 
 export function buildSummaryMessage(
@@ -63,34 +90,34 @@ export function buildConflictMessage(
 
   if (language === "ru") {
     lines.push(
-      `КОНФЛИКТ — ${conflicts.length === 1 ? "" : conflicts.length + " "}`,
+      `КОНФЛИКТ${conflicts.length === 1 ? "" : " — " + conflicts.length}`,
     );
   } else if (language === "kk") {
     lines.push(
-      `ҚАЙШЫЛЫҚ — ${conflicts.length === 1 ? "" : conflicts.length + " "}`,
+      `ҚАЙШЫЛЫҚ${conflicts.length === 1 ? "" : " — " + conflicts.length}`,
     );
   } else {
     lines.push(
-      `CONFLICT — ${conflicts.length === 1 ? "" : conflicts.length + " tasks"}`,
+      `CONFLICT${conflicts.length === 1 ? "" : " — " + conflicts.length}`,
     );
   }
 
   lines.push("");
 
-  const existingLabel =
-    language === "ru" ? "СУЩЕСТВУЮЩИЙ" : language === "kk" ? "БАР" : "EXISTING";
-  const newLabel =
-    language === "ru" ? "НОВЫЙ" : language === "kk" ? "ЖАҢА" : "NEW";
-
   for (const c of conflicts) {
-    lines.push(`${existingLabel}:`);
-    lines.push(
-      `— ${c.existingTodo.task}${c.existingTodo.time ? " · " + c.existingTodo.time : ""}`,
-    );
-    lines.push(`${newLabel}:`);
-    lines.push(
-      `— ${c.newTodo.task}${c.newTodo.time ? " · " + c.newTodo.time : ""}`,
-    );
+    const exTime = c.existingTodo.time || formatTimeKz((c.existingTodo as any).datetime || (c.existingTodo as any).scheduled_at);
+    const exDur = c.existingTodo.duration || (c.existingTodo as any).duration_minutes || 30;
+    const exEnd = addMinutesToTime(exTime, exDur);
+    const exSrc = sourceLabel(c.existingTodo.source, language);
+
+    const newTime = c.newTodo.time || formatTimeKz((c.newTodo as any).datetime || (c.newTodo as any).scheduled_at);
+    const newDur = c.newTodo.duration || (c.newTodo as any).duration_minutes || 30;
+    const newEnd = addMinutesToTime(newTime, newDur);
+    const newSrc = sourceLabel(c.newTodo.source, language);
+
+    lines.push(`— ${c.existingTodo.task} · ${exTime}–${exEnd} [${exSrc}]`);
+    lines.push(`  пересекается с`);
+    lines.push(`— ${c.newTodo.task} · ${newTime}–${newEnd} [${newSrc}]`);
     lines.push("");
   }
 
@@ -103,6 +130,17 @@ export function buildConflictMessage(
   }
 
   return lines.join("\n");
+}
+
+/** Add minutes to HH:mm string, returns new HH:mm */
+function addMinutesToTime(timeStr: string, minutes: number): string {
+  if (!timeStr || timeStr === '—:——') return '—:——';
+  const parts = timeStr.split(':').map(Number);
+  if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) return timeStr;
+  const totalMins = parts[0] * 60 + parts[1] + minutes;
+  const h = Math.floor(totalMins / 60) % 24;
+  const m = totalMins % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 /** Combined conflict message for multiple tasks. */
@@ -183,23 +221,24 @@ export function getConflictKeyboard(
       : language === "kk"
         ? "Екеуін де қалдыру"
         : "Keep both";
-  const skipLabel =
+  const replaceLabel =
     language === "ru"
-      ? "Пропустить новый"
+      ? "Заменить старый"
       : language === "kk"
-        ? "Жаңасын өткізіп жіберу"
-        : "Skip new";
-  const reschedLabel =
+        ? "Ескісін ауыстыру"
+        : "Replace old";
+  const cancelLabel =
     language === "ru"
-      ? "Перенести новый"
+      ? "Отменить новый"
       : language === "kk"
-        ? "Жаңасын жылжыту"
-        : "Reschedule new";
+        ? "Жаңасын болдыру"
+        : "Cancel new";
 
   return new InlineKeyboard()
     .text(keepLabel, `conflict_keep_${pendingId}`)
-    .text(skipLabel, `conflict_skip_${pendingId}`)
-    .text(reschedLabel, `conflict_reschedule_${pendingId}`);
+    .text(replaceLabel, `conflict_replace_${pendingId}`)
+    .row()
+    .text(cancelLabel, `conflict_skip_${pendingId}`);
 }
 
 export function getCombinedConflictKeyboard(
@@ -238,12 +277,12 @@ export function getSingleConflictKeyboard(
 ): InlineKeyboard {
   const keepLabel =
     language === "ru" ? "Оставить" : language === "kk" ? "Қалдыру" : "Keep";
-  const reschedLabel =
+  const replaceLabel =
     language === "ru"
-      ? "Перенести"
+      ? "Заменить"
       : language === "kk"
-        ? "Жылжыту"
-        : "Reschedule";
+        ? "Ауыстыру"
+        : "Replace";
   const nextLabel =
     language === "ru"
       ? "Пропустить"
@@ -253,7 +292,7 @@ export function getSingleConflictKeyboard(
 
   return new InlineKeyboard()
     .text(keepLabel, `conflict_keep_idx_${pendingId}_${conflictIndex}`)
-    .text(reschedLabel, `conflict_reschedule_idx_${pendingId}_${conflictIndex}`)
+    .text(replaceLabel, `conflict_replace_idx_${pendingId}_${conflictIndex}`)
     .text(nextLabel, `conflict_skip_idx_${pendingId}_${conflictIndex}`);
 }
 
@@ -437,4 +476,77 @@ export function getNavKeyboard(language: string): InlineKeyboard {
     .text(weekLabel, "nav_weekly")
     .text(clearLabel, "nav_clear")
     .text(langLabel, "nav_language");
+}
+
+// ─── Free Time & Availability ──────────────────────────────────────────────────
+
+export interface FreeTimeGap {
+  start: string;  // HH:mm
+  end: string;    // HH:mm
+  durationMin: number;
+}
+
+export interface BreakInfo {
+  afterTask: string;
+  afterTime: string;
+  durationMin: number;
+  beforeNextTask: string;
+}
+
+/** Build the free time + breaks message */
+export function buildFreeTimeMessage(
+  dateLabel: string,
+  gaps: FreeTimeGap[],
+  breaks: BreakInfo[],
+  language: string,
+): string {
+  const lines: string[] = [];
+
+  if (language === 'ru') {
+    lines.push(`Свободное время ${dateLabel}:`);
+  } else if (language === 'kk') {
+    lines.push(`Бос уақыт ${dateLabel}:`);
+  } else {
+    lines.push(`Free time ${dateLabel}:`);
+  }
+
+  lines.push('');
+
+  if (gaps.length === 0) {
+    if (language === 'ru') lines.push('Нет свободных окон (15+ мин).');
+    else if (language === 'kk') lines.push('Бос терезе жоқ (15+ мин).');
+    else lines.push('No free windows (15+ min).');
+  } else {
+    for (const g of gaps) {
+      const durLabel = formatDuration(g.durationMin);
+      // Evening label
+      if (g.start >= '18:00' && g.end === '22:00') {
+        if (language === 'ru') lines.push(`— ${g.start}–${g.end} (${durLabel}, вечер свободен)`);
+        else if (language === 'kk') lines.push(`— ${g.start}–${g.end} (${durLabel}, кеш бос)`);
+        else lines.push(`— ${g.start}–${g.end} (${durLabel}, evening free)`);
+      } else {
+        lines.push(`— ${g.start}–${g.end} (${durLabel})`);
+      }
+    }
+  }
+
+  if (breaks.length > 0) {
+    lines.push('');
+    if (language === 'ru') lines.push('Перерывы между задачами:');
+    else if (language === 'kk') lines.push('Тапсырмалар арасындағы үзілістер:');
+    else lines.push('Breaks between tasks:');
+
+    for (const b of breaks) {
+      const durLabel = formatDuration(b.durationMin);
+      if (language === 'ru') {
+        lines.push(`— ${b.afterTime} после «${b.afterTask}» · ${durLabel} до следующей`);
+      } else if (language === 'kk') {
+        lines.push(`— ${b.afterTime} «${b.afterTask}» кейін · ${durLabel} келесіге дейін`);
+      } else {
+        lines.push(`— ${b.afterTime} after "${b.afterTask}" · ${durLabel} until next`);
+      }
+    }
+  }
+
+  return lines.join('\n');
 }

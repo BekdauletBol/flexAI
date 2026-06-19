@@ -7,10 +7,14 @@ import {
   handlePlanIntent,
   handleQuestionIntent,
   routeByIntent,
+  processTextInput,
   continueFlow,
   routeImageFollowup,
 } from "./handlers/voice.js";
-import { handleImage, pendingImageTasks, mapSourceAppToTaskSource } from "./handlers/image.js";
+import {
+  pendingImageTasks,
+  mapSourceAppToTaskSource,
+} from "./handlers/image.js";
 import { initScheduler } from "./services/scheduler.js";
 import { createServer, resetStartTime } from "./server.js";
 import {
@@ -36,6 +40,7 @@ import {
 } from "./services/reporter.js";
 import { geocodeCity } from "./services/location.js";
 import { generateReportPdf } from "./services/pdf.js";
+import { generateDailyReportPdf, generateRangeReportPdf } from "./services/report.js";
 import { DateTime } from 'luxon';
 
 const KZ_ZONE = 'Asia/Almaty';
@@ -74,15 +79,9 @@ import {
   snoozeReminderUntilMorning,
 } from "./services/scheduler.js";
 import { detectIntent } from "./services/intent.js";
-import { db } from "./services/db.js";
+import { db, updateLinkedReminders } from "./services/db.js";
 import { logger } from "./logger.js";
 import { voiceQueue, getQueueStats } from "./services/queue.js";
-
-console.log("[Config] Model:", process.env.OPENAI_MODEL || "not set");
-console.log("[Config] BaseURL:", process.env.OPENAI_BASE_URL || "not set");
-console.log("[Config] OpenAI key exists:", !!process.env.OPENAI_API_KEY);
-console.log("[Config] GitHub token exists:", !!process.env.GITHUB_TOKEN);
-console.log("[Config] Groq key exists:", !!process.env.GROQ_API_KEY);
 
 const bot = new Bot(config.telegramToken);
 
@@ -295,8 +294,27 @@ bot.command("start", async (ctx) => {
 });
 
 bot.command("help", async (ctx) => {
-  const lang = getLang(ctx.from!.id);
-  await ctx.reply(i18n[lang].start);
+  await ctx.reply(`
+flexAI — твой личный ИИ-секретарь
+
+Что я умею:
+🎙 Голосом — диктуй планы, задачи, напоминания
+📸 Скриншотом — распознаю задачи с экрана
+✏️ Текстом — пиши как в чат
+
+Примеры:
+— "Добавь встречу в 15:00, напомни за 20 минут"
+— "Перенеси встречу на 15:00"
+— "Когда я сегодня свободен?"
+— "Скинь отчёт за эту неделю"
+
+Команды:
+/report — PDF на сегодня
+/weekly — отчёт за неделю
+/clear — архивировать выполненные
+/reminders — активные напоминания
+/language — сменить язык
+  `);
 });
 
 bot.command("language", async (ctx) => {
@@ -334,6 +352,38 @@ bot.command("report", async (ctx) => {
   }
 
   const lang = getLang(userId);
+  const text = ctx.message?.text || "";
+  const args = text.split(/\s+/).slice(1).filter(Boolean);
+  const isWeek = args.some((a) => /^week|недел|апта$/i.test(a));
+
+  if (isWeek) {
+    // ── Weekly report ──
+    const kzNow = DateTime.now().setZone('Asia/Almaty');
+    const weekStart = kzNow.startOf('week').toFormat('yyyy-MM-dd');
+    const weekEnd = kzNow.endOf('week').toFormat('yyyy-MM-dd');
+
+    console.log('[Report] /report week:', weekStart, '→', weekEnd);
+
+    const waitMsg = await ctx.reply(i18n[lang].wait_report);
+    try {
+      const pdfBuf = await generateRangeReportPdf(userId, weekStart, weekEnd, lang);
+      try { await ctx.api.deleteMessage(ctx.chat!.id, waitMsg.message_id); } catch {}
+      await ctx.replyWithDocument(
+        new InputFile(pdfBuf, `report_week_${weekStart}_${DateTime.now().toMillis()}.pdf`),
+        { caption: "Weekly Report", reply_markup: getNavKeyboard(lang) },
+      );
+    } catch (err: any) {
+      logger.error("[PDF] Weekly report failed:", err.message, err.stack);
+      try {
+        await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, `[PDF] ${err.message}`, {
+          reply_markup: getNavKeyboard(lang),
+        });
+      } catch {}
+    }
+    return;
+  }
+
+  // ── Daily report (default) ──
   const rawTasks = getTasksFiltered(userId, { date: getKzToday(), includeDone: true });
   const { tasks, overdue } = prepareReportTasks(rawTasks, getKzToday());
 
@@ -369,7 +419,7 @@ bot.command("report", async (ctx) => {
       reply_markup: getNavKeyboard(lang),
     });
   } catch (err: any) {
-    console.error("[PDF] Generation failed:", err.message, err.stack);
+    logger.error("[PDF] Generation failed:", err.message, err.stack);
     try {
       await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `[PDF] ${err.message}`, {
         reply_markup: getNavKeyboard(lang),
@@ -405,7 +455,7 @@ bot.command("weekly", async (ctx) => {
       reply_markup: getNavKeyboard(lang),
     });
   } catch (err: any) {
-    console.error("[PDF] Generation failed:", err.message, err.stack);
+    logger.error("[PDF] Generation failed:", err.message, err.stack);
     try {
       await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `[PDF] ${err.message}`, {
         reply_markup: getNavKeyboard(lang),
@@ -558,7 +608,7 @@ bot.command("setcity", async (ctx) => {
       `Location set.\n\n— ${cityName}\n— ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`,
     );
   } catch (err) {
-    console.error("[Bot] Failed to set city:", err);
+    logger.error("[Bot] Failed to set city: %s", String(err));
     await ctx.api.editMessageText(
       ctx.chat.id,
       statusMsg.message_id,
@@ -599,7 +649,7 @@ bot.callbackQuery("nav_report", async (ctx) => {
       reply_markup: getNavKeyboard(lang),
     });
   } catch (err) {
-    console.error("[Bot] Report generation failed:", err);
+    logger.error("[Bot] Report generation failed: %s", String(err));
     const report = await generateFullReport(tasks, lang);
     await ctx.reply(report, { reply_markup: getNavKeyboard(lang) });
   }
@@ -628,7 +678,7 @@ bot.callbackQuery("nav_weekly", async (ctx) => {
       reply_markup: getNavKeyboard(lang),
     });
   } catch (err) {
-    console.error("[Bot] Weekly PDF failed:", err);
+    logger.error("[Bot] Weekly PDF failed: %s", String(err));
     const report = generateWeeklyReport(plans, lang);
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, report, {
       reply_markup: getNavKeyboard(lang),
@@ -788,6 +838,65 @@ bot.callbackQuery(/^conflict_keep_idx_(.+)_(\d+)$/, async (ctx) => {
     const conflict = pending.conflicts[nextIndex];
     const conflictMsg = buildConflictMessage(
       [conflict],
+      pending.analysis.language,
+    );
+    const keyboard = getSingleConflictKeyboard(
+      pendingId,
+      nextIndex,
+      pending.analysis.language,
+    );
+
+    if (ctx.callbackQuery.message) {
+      try {
+        await ctx.api.deleteMessage(
+          ctx.chat!.id,
+          ctx.callbackQuery.message.message_id,
+        );
+      } catch {}
+    }
+    await ctx.reply(conflictMsg, { reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery(/^conflict_replace_idx_(.+)_(\d+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const conflictIndex = parseInt(ctx.match[2], 10);
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery("Expired.");
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  // Delete the existing conflicting task from DB
+  const conflict = pending.conflicts[conflictIndex];
+  if (conflict) {
+    const existingId = conflict.existingTodo.id;
+    db.prepare('DELETE FROM todos WHERE id = ? AND user_id = ?').run(existingId, pending.userId);
+    logger.debug(`[Conflict] Replaced task "${conflict.existingTodo.task}" (id=${existingId}) with "${conflict.newTodo.task}"`);
+  }
+
+  const nextIndex = conflictIndex + 1;
+
+  if (nextIndex >= pending.conflicts.length) {
+    if (ctx.chat) {
+      savePlan(ctx.chat.id, pending.userId, pending.analysis, pending.source);
+    }
+    if (ctx.callbackQuery.message) {
+      try {
+        await ctx.api.deleteMessage(
+          ctx.chat!.id,
+          ctx.callbackQuery.message.message_id,
+        );
+      } catch {}
+    }
+    await startDeliveryFlow(ctx, pending);
+  } else {
+    pending.conflictIndex = nextIndex;
+    const nextConflict = pending.conflicts[nextIndex];
+    const conflictMsg = buildConflictMessage(
+      [nextConflict],
       pending.analysis.language,
     );
     const keyboard = getSingleConflictKeyboard(
@@ -1080,8 +1189,14 @@ bot.callbackQuery("rs_confirm", async (ctx) => {
     selectedDate,
     selectedTime,
   );
-  if (updated && ctx.chat) {
-    scheduleReminders(ctx.chat.id, userId, [updated], lang);
+  if (updated) {
+    // Update linked DB reminders
+    const { kzLocalToUTC } = await import("./utils/timezone.js");
+    const newScheduledAt = kzLocalToUTC(selectedDate, selectedTime);
+    updateLinkedReminders(taskId, newScheduledAt);
+    if (ctx.chat) {
+      scheduleReminders(ctx.chat.id, userId, [updated], lang);
+    }
   }
 
   // If batch mode (one by one), advance to next conflict
@@ -1145,6 +1260,42 @@ bot.callbackQuery(/^conflict_keep_(.+)$/, async (ctx) => {
   }
 
   await ctx.answerCallbackQuery();
+
+  if (ctx.chat) {
+    savePlan(ctx.chat.id, pending.userId, pending.analysis, pending.source);
+  }
+
+  if (ctx.callbackQuery.message) {
+    try {
+      await ctx.api.deleteMessage(
+        ctx.chat!.id,
+        ctx.callbackQuery.message.message_id,
+      );
+    } catch {}
+  }
+
+  await startDeliveryFlow(ctx, pending);
+});
+
+bot.callbackQuery(/^conflict_replace_(.+)$/, async (ctx) => {
+  const pendingId = ctx.match[1];
+  const pending = getPending(pendingId);
+  if (!pending) {
+    await ctx.answerCallbackQuery("Expired.");
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  // "Replace old" — delete the existing conflicting task, then insert the new one
+  if (pending.conflicts.length > 0) {
+    const conflict = pending.conflicts[0];
+    const existingId = conflict.existingTodo.id;
+    const userId = pending.userId;
+    // Remove the existing task from DB
+    db.prepare('DELETE FROM todos WHERE id = ? AND user_id = ?').run(existingId, userId);
+    logger.debug(`[Conflict] Replaced task "${conflict.existingTodo.task}" (id=${existingId}) with "${conflict.newTodo.task}"`);
+  }
 
   if (ctx.chat) {
     savePlan(ctx.chat.id, pending.userId, pending.analysis, pending.source);
@@ -1768,8 +1919,6 @@ bot.on("message:voice", async (ctx) => {
   });
 });
 
-bot.on("message:photo", handleImage);
-
 bot.on("message:audio", async (ctx) => {
   const lang = getLang(ctx.from?.id ?? 0);
   await ctx.reply(i18n[lang].audio_note);
@@ -1981,24 +2130,31 @@ bot.on("message:text", async (ctx) => {
   // No active flow — route through same intent pipeline as voice
   const text = ctx.message.text;
   const lang = getLang(userId);
-  const statusMsgId = (await ctx.reply("Analyzing...")).message_id;
+  const statusMsg = await ctx.reply("Analyzing...");
   try {
-    const intentResult = await detectIntent(text, userId);
-    await routeByIntent(
-      intentResult,
-      ctx,
-      userId,
-      text,
-      { message_id: statusMsgId },
-      lang,
-    );
+    await processTextInput(text, ctx, userId, lang, statusMsg);
   } catch (err) {
-    console.error("[Text] Intent routing failed:", err);
+    logger.error("[Text] Intent routing failed: %s", String(err));
     try {
-      await ctx.api.deleteMessage(ctx.chat!.id, statusMsgId);
+      await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
     } catch {}
     await ctx.reply(i18n[lang].voice_only);
   }
+});
+
+// ─── Photo handler — uses existing image processing ──────────────────────
+bot.on("message:photo", async (ctx) => {
+  const { handleImage } = await import("./handlers/image.js");
+  await handleImage(ctx);
+});
+
+// ─── Document handler (images sent as files) ──────────────────────────────
+bot.on("message:document", async (ctx) => {
+  const doc = ctx.message.document;
+  if (!doc?.mime_type?.startsWith('image/')) return;
+  // Treat as photo — forward to photo handler
+  const { handleImage } = await import("./handlers/image.js");
+  await handleImage(ctx);
 });
 
 // ─── Error handling ───────────────────────────────────────────────────────────

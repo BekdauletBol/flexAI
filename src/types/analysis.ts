@@ -13,6 +13,7 @@ export interface TodoItem {
   duration?: number;   // minutes, default 30
   location?: string;
   source?: TaskSource; // origin of the task
+  reminder_minutes?: number; // minutes before task to send reminder (0 = no reminder)
 }
 
 export interface AnalysisResult {
