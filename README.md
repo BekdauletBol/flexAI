@@ -306,8 +306,6 @@ Per-user long-term memory: habits, projects, preferences, important dates, patte
 
 ## Production Features
 
-- **Rate limiting** — 30 requests per minute per user (sliding window).
-- **User cap** — Hard limit of 30,000 configurable via `MAX_USERS`.
 - **Processing queue** — p-queue with concurrency 5 for voice messages.
 - **Structured logging** — Pino with JSON in production, pretty-print in dev. Redacts sensitive headers/tokens.
 - **Graceful shutdown** — SIGTERM/SIGINT handlers: stops bot, drains queue, force-exit after 5s.
@@ -328,7 +326,3 @@ Three report types with Obsidian-inspired dark theme (#0D1117 background, #58A6F
 - **Full Analysis PDF** — Title, summary, timeline visualization with nodes, priority pills, tags, transcript.
 - **Task Report PDF** — Pending/completed tables with priority badges, stats section.
 - **Multi-Date Report PDF** — Filtered/multi-date reports with sections per date.
-
-## License
-
-MIT
