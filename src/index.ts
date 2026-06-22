@@ -617,6 +617,31 @@ bot.command("setcity", async (ctx) => {
   }
 });
 
+bot.command("tokens", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  const { getRateLimitStatus } = await import('./services/rateLimitStore.js');
+  const status = getRateLimitStatus(userId);
+  const lang = getLang(userId);
+
+  if (status) {
+    const msg = lang === 'ru'
+      ? `⚠️ Лимит API-запросов исчерпан.\n\nСброс через: ${status.resetIn}\n\nПока что отправляйте текст — голосовые и анализа скриншотов временно недоступны.`
+      : lang === 'kk'
+        ? `⚠️ API сұраныстар лимиті таусылды.\n\nЖаңарту: ${status.resetIn}\n\nМәтін жіберіңіз — дауыстық және скриншот талдауы уақытша қол жетімсіз.`
+        : `⚠️ API rate limit reached.\n\nResets in: ${status.resetIn}\n\nSend text messages for now — voice and screenshot analysis are temporarily unavailable.`;
+    await ctx.reply(msg);
+  } else {
+    const msg = lang === 'ru'
+      ? '✅ Лимиты в норме. Бот работает в полном объёме.'
+      : lang === 'kk'
+        ? '✅ Лимиттер нормада. Бот толық жұмыс істеп тұр.'
+        : '✅ All limits OK. Bot is fully operational.';
+    await ctx.reply(msg);
+  }
+});
+
 // ─── Callback handlers
 
 bot.callbackQuery("nav_report", async (ctx) => {

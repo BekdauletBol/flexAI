@@ -903,7 +903,8 @@ export async function handleVoice(ctx: Context) {
       if (msg.includes("Failed to transcribe") || msg.includes("rate limit") || msg.includes("429")) {
         if (msg.includes("rate limit") || msg.includes("429")) {
           const { handleRateLimit } = await import('../services/rateLimitStore.js');
-          const limitMsg = handleRateLimit(error, ctx.chat!.id, userId, 'whisper');
+          const userName = ctx.from?.first_name || ctx.from?.username || String(userId);
+          const limitMsg = handleRateLimit(error, ctx.chat!.id, userId, 'whisper', userName);
           await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, limitMsg);
         } else {
           await ctx.api.editMessageText(
@@ -922,7 +923,8 @@ export async function handleVoice(ctx: Context) {
         );
       } else if (msg.includes("rate limit") || msg.includes("429") || msg.includes("Too Many Requests") || msg.includes("limit")) {
         const { handleRateLimit } = await import('../services/rateLimitStore.js');
-        const limitMsg = handleRateLimit(error, ctx.chat!.id, userId, 'analysis');
+        const userName = ctx.from?.first_name || ctx.from?.username || String(userId);
+        const limitMsg = handleRateLimit(error, ctx.chat!.id, userId, 'analysis', userName);
         await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, limitMsg);
       } else {
         await ctx.api.editMessageText(
