@@ -52,6 +52,7 @@ import {
   UserState,
   getUserFlowState,
   getRescheduleState,
+  clearRescheduleState,
   getAwaitingImageFollowup,
   clearAwaitingImageFollowup,
   isAwaitingVoiceFollowup,
@@ -100,7 +101,7 @@ import {
   generateWeeklyReport,
 } from "../services/reporter.js";
 import { pendingImageTasks, ExtractedTask } from "./image.js";
-import { groq, GROQ_MODEL, hasGroq } from "../services/groq.js";
+import { callLLM } from "../services/llm-client.js";
 import fs from "fs";
 import path from "path";
 import https from "https";
@@ -117,6 +118,13 @@ interface PendingTimeUpdate {
   step: number;
 }
 const pendingTimeUpdate = new Map<number, PendingTimeUpdate>();
+
+function looksLikeNewPlan(text: string): boolean {
+  const lower = text.toLowerCase();
+  return /\b(напомни|напомнить|напоминание|напоминалка|поставь|поставить|создай|создать|запланируй|запланировать|сделай|сделать|добавь|добавить|нужно|надо|хочу|буду|давай|запиши|записать|хочу сделать|надо сделать|нужно сделать)\b/.test(lower)
+    || /\b(remind|reminder|create|add|schedule|plan|set|make|need|want|will)\b/.test(lower)
+    || /\b(қалайды|қажет|есімде|еске|ӛткізу|жоспарла|жаз|қос)\b/.test(lower);
+}
 
 function extractWordTime(text: string): string | null {
   const map: Record<string, string> = {
@@ -447,22 +455,10 @@ async function handleVoiceWithImageContext(
     )
     .join("\n");
 
-  const fallback = new (await import("openai")).OpenAI({
-    apiKey: config.openaiApiKey,
-    ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
-    timeout: 60000,
-    maxRetries: 1,
-  });
-
-  const llm = hasGroq ? groq : fallback;
-  const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
-
-  const response = await llm.chat.completions.create({
-    model: MODEL,
-    messages: [
-      {
-        role: "system",
-        content: `You are a personal secretary bot processing a screenshot + voice command.
+  const { content: rawContent } = await callLLM([
+    {
+      role: "system",
+      content: `You are a personal secretary bot processing a screenshot + voice command.
 
 SCREENSHOT TASKS (extracted from image):
 ${imageTasksText}
@@ -481,15 +477,16 @@ Return ONLY this JSON with NO extra text:
   "message": "brief response in user's language",
   "new_tasks": [any new tasks mentioned in voice, each with task, time{optional}, date{optional}, priority{optional}]
 }`,
-      },
-      { role: "user", content: `Voice command: "${transcript}"` },
-    ],
+    },
+    { role: "user", content: `Voice command: "${transcript}"` },
+  ], {
     max_tokens: 1024,
     response_format: { type: "json_object" },
     temperature: 0.2,
+    timeout: 60000,
   });
 
-  const content = response.choices[0]?.message?.content || "{}";
+  const content = rawContent || "{}";
   let result: any;
   try {
     result = JSON.parse(content);
@@ -779,6 +776,12 @@ export async function handleVoice(ctx: Context) {
     if (state?.flow) {
       await continueFlow(ctx, userId, state, transcript, statusMsg, lang);
       return;
+    }
+
+    // If message looks like a new plan, clear stale flow/reschedule states
+    if (looksLikeNewPlan(transcript)) {
+      clearUserFlowState(userId);
+      clearRescheduleState(userId);
     }
 
     const flowState = getUserFlowState(userId);
@@ -2075,6 +2078,11 @@ export async function processTextInput(
   lang: string,
   statusMsg?: any,
 ) {
+  // ── If message is a new plan, clear stale pending time update ──
+  if (looksLikeNewPlan(transcript)) {
+    pendingTimeUpdate.delete(userId);
+  }
+
   // ── Pending time update: user is answering "В какое время?" ──
   const pendingTime = pendingTimeUpdate.get(userId);
   if (pendingTime && pendingTime.tasks.length > 0) {

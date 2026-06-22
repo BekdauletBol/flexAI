@@ -1,21 +1,10 @@
 import { logger } from '../logger.js';
-import OpenAI from 'openai';
 import { config } from '../config.js';
 import { TodoItem } from '../types/analysis.js';
-import { groq, GROQ_MODEL, hasGroq } from './groq.js';
 import { DateTime } from 'luxon';
+import { callLLM } from './llm-client.js';
 
 const KZ_ZONE = 'Asia/Almaty';
-
-const fallback = new OpenAI({
-  apiKey: config.openaiApiKey,
-  ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
-  timeout: 30000,
-  maxRetries: 0,
-});
-
-const llm = hasGroq ? groq : fallback;
-const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
 
 const SEP = '———————————————';
 
@@ -66,17 +55,16 @@ ${taskList}
 `;
 
   try {
-    const response = await llm.chat.completions.create({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: 'You are a productivity coach.' },
-        { role: 'user', content: prompt },
-      ],
+    const { content } = await callLLM([
+      { role: 'system', content: 'You are a productivity coach.' },
+      { role: 'user', content: prompt },
+    ], {
       temperature: 0.7,
       max_tokens: 1000,
+      timeout: 30000,
     });
 
-    return response.choices[0]?.message?.content || 'Failed to generate report.';
+    return content || 'Failed to generate report.';
   } catch (error) {
     logger.error(error, '[Reporter] AI error:');
     // Fallback to plain text report

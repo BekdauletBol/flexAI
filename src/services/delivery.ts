@@ -8,6 +8,7 @@ import { InlineKeyboard } from 'grammy';
 import { generatePdf } from './pdf.js';
 import { DateTime } from 'luxon';
 import { logger } from '../logger.js';
+import { scheduleReminders } from './scheduler.js';
 
 const KZ_ZONE = 'Asia/Almaty';
 
@@ -45,6 +46,21 @@ export async function advanceReminderLoop(ctx: Context, pending: PendingVoiceNot
   const todos = pending.resolvedTodos || analysis.todos;
 
   if (pending.reminderIndex === undefined) pending.reminderIndex = 0;
+
+  // Skip tasks that already have an explicit time — auto-schedule at task time, no buttons
+  while (pending.reminderIndex < todos.length) {
+    const currentTask = todos[pending.reminderIndex];
+    if (currentTask.time && (currentTask.reminder_minutes == null || currentTask.reminder_minutes === undefined)) {
+      // Auto-schedule reminder at the exact task time (offset=0)
+      if (ctx.chat) {
+        scheduleReminders(ctx.chat.id, userId, [currentTask], lang, 0);
+      }
+      logger.info(`[Delivery] Auto-scheduled reminder at task time for: "${currentTask.task}" at ${currentTask.time}`);
+      pending.reminderIndex++;
+      continue;
+    }
+    break;
+  }
 
   if (pending.reminderIndex < todos.length) {
     const currentTask = todos[pending.reminderIndex];

@@ -1,29 +1,6 @@
 import { logger } from '../logger.js';
-import OpenAI from 'openai';
 import { config } from '../config.js';
-import { groq, GROQ_MODEL, hasGroq } from './groq.js';
-
-const fallback = new OpenAI({
-  apiKey: config.openaiApiKey,
-  ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
-  timeout: 30000,
-  maxRetries: 1,
-});
-
-const llm = hasGroq ? groq : fallback;
-const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
-
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timeoutId: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
-  });
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    clearTimeout(timeoutId!);
-  }
-}
+import { callLLM } from './llm-client.js';
 
 interface PlaceResult {
   name: string;
@@ -169,16 +146,15 @@ export async function generateLocationAdvice(
   ].filter(Boolean).join('\n');
 
   try {
-    const res = await withTimeout(llm.chat.completions.create({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: `You give short, practical location advice in ${lang}. Be concise (3-4 sentences max). Include emoji.` },
-        { role: 'user', content: `Based on this data, is this a good time to visit? Any issues? Best alternative?\n\n${context}` },
-      ],
+    const { content } = await callLLM([
+      { role: 'system', content: `You give short, practical location advice in ${lang}. Be concise (3-4 sentences max). Include emoji.` },
+      { role: 'user', content: `Based on this data, is this a good time to visit? Any issues? Best alternative?\n\n${context}` },
+    ], {
       temperature: 0.5,
       max_tokens: 300,
-    }), 30000);
-    return res.choices[0]?.message?.content || '';
+      timeout: 30000,
+    });
+    return content || '';
   } catch (err) {
     logger.error(err, '[Location] Advice generation failed:');
     return '';

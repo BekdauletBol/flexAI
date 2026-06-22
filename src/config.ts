@@ -38,7 +38,7 @@ export function initConfig(): Config {
     openaiBaseUrl: isGitHubModels ? 'https://models.inference.ai.azure.com' : undefined,
     isGitHubModels,
     groqApiKey: process.env.GROQ_API_KEY || '',
-    githubToken: process.env.GITHUB_TOKEN || '',
+    githubToken: process.env.OPENAI_API_KEY || '',
     allowedUserId: process.env.ALLOWED_USER_ID ? parseInt(process.env.ALLOWED_USER_ID) : undefined,
     adminTelegramId: process.env.ADMIN_TELEGRAM_ID ? parseInt(process.env.ADMIN_TELEGRAM_ID) : undefined,
     telegramSecretToken: process.env.TELEGRAM_BOT_API_SECRET_TOKEN || '',

@@ -103,7 +103,7 @@ export function scheduleReminders(chatId: number, userId: number, todos: TodoIte
 
     if (overrideOffset !== undefined) {
       offset = overrideOffset;
-    } else if (todo.reminder_minutes && todo.reminder_minutes > 0) {
+    } else if (todo.reminder_minutes != null && todo.reminder_minutes > 0) {
       offset = todo.reminder_minutes;
     }
 
@@ -224,7 +224,9 @@ export function snoozeReminderUntilMorning(taskId: string, language: string) {
 async function checkReminders() {
   if (!bot) return;
   const nowUtc = DateTime.now().toUTC().toISO()!;
+  const nowMs = DateTime.now().toMillis();
   const { db } = await import('../services/db.js');
+  const { getUserConfig } = await import('../services/userConfig.js');
 
   // Check if rate-limited users can recover (GitHub Models daily reset)
   try {
@@ -232,34 +234,86 @@ async function checkReminders() {
     await checkRateLimitRecovery(bot);
   } catch {}
 
-  // Query DB for due, un-notified, non-done reminders
+  // ── Process in-memory reminders (from scheduleReminders / delivery flow) ──
+  for (const reminder of reminders) {
+    if (reminder.notified) continue;
+    if (reminder.snoozedUntil && reminder.snoozedUntil > nowMs) continue;
+    if (reminder.triggerAt > nowMs) continue;
+
+    const cfg = getUserConfig(reminder.chatId);
+    const lang = cfg?.language || reminder.language || 'ru';
+
+    let displayTime = reminder.timeStr || '';
+    if (reminder.triggerAt) {
+      const localDT = DateTime.fromMillis(reminder.triggerAt).setZone('Asia/Almaty');
+      if (localDT.isValid) {
+        const kzNow = DateTime.now().setZone('Asia/Almaty');
+        const isToday = localDT.hasSame(kzNow, 'day');
+        const isTomorrow = localDT.hasSame(kzNow.plus({ days: 1 }), 'day');
+        const dateLabel = isToday ? (lang === 'ru' ? 'сегодня' : lang === 'kk' ? 'бүгін' : 'today')
+          : isTomorrow ? (lang === 'ru' ? 'завтра' : lang === 'kk' ? 'ертең' : 'tomorrow')
+          : localDT.setLocale(lang === 'ru' ? 'ru' : lang === 'kk' ? 'kk' : 'en').toFormat('d MMMM');
+        displayTime = `${dateLabel} в ${localDT.toFormat('HH:mm')}`;
+      }
+    }
+
+    const msgs: Record<string, string> = {
+      en: `REMINDER\n\n— ${reminder.task}${reminder.location ? ` · ${reminder.location}` : ''}\n— ${displayTime}`,
+      ru: `НАПОМИНАНИЕ\n\n— ${reminder.task}${reminder.location ? ` · ${reminder.location}` : ''}\n— ${displayTime}`,
+      kk: `ЕСКЕ САЛУ\n\n— ${reminder.task}${reminder.location ? ` · ${reminder.location}` : ''}\n— ${displayTime}`,
+    };
+
+    const keyboard = new InlineKeyboard()
+      .text(lang === 'ru' ? '+10 мин' : lang === 'kk' ? '+10 мин' : '+10 min', `snz_10_${reminder.taskId}`)
+      .text(lang === 'ru' ? '+30 мин' : lang === 'kk' ? '+30 мин' : '+30 min', `snz_30_${reminder.taskId}`)
+      .text(lang === 'ru' ? '+1 час' : lang === 'kk' ? '+1 сағат' : '+1 hour', `snz_60_${reminder.taskId}`)
+      .row()
+      .text(lang === 'ru' ? 'Завтра утром' : lang === 'kk' ? 'Ертең таңертең' : 'Tomorrow morning', `snz_tmrw_${reminder.taskId}`)
+      .text(lang === 'ru' ? 'Готово ✓' : lang === 'kk' ? 'Дайын ✓' : 'Done ✓', `snz_done_${reminder.taskId}`);
+
+    try {
+      await bot.api.sendMessage(reminder.chatId, msgs[lang] || msgs.en, { reply_markup: keyboard });
+      reminder.notified = true;
+      logger.info(`[Scheduler] Sent in-memory reminder: "${reminder.task}" at ${displayTime}`);
+    } catch (err) {
+      logger.error(err, `[Scheduler] Failed to send in-memory reminder: "${reminder.task}"`);
+    }
+  }
+
+  // ── Query DB for due, un-notified, non-done reminders ──
+  // Also handle snoozed: notified=1 but snoozed_until <= now (re-send after snooze)
   const dueRows = db.prepare(`
     SELECT id, chat_id, user_id, task, datetime, location, source
     FROM todos
     WHERE is_reminder = 1
-      AND datetime <= ?
-      AND notified = 0
       AND done = 0
+      AND (
+        (notified = 0 AND datetime <= ?)
+        OR (notified = 1 AND snoozed_until IS NOT NULL AND snoozed_until != '' AND snoozed_until <= ?)
+      )
     ORDER BY datetime ASC
-  `).all(nowUtc) as any[];
+  `).all(nowUtc, nowUtc) as any[];
 
   if (dueRows.length === 0) return;
 
   for (const row of dueRows) {
-    // Double-guard: skip if already notified (race condition protection)
-    if (row.notified) continue;
+    // Double-guard: skip if already notified and not snoozed
+    if (row.notified && (!row.snoozed_until || row.snoozed_until === '')) continue;
+
+    const cfg = getUserConfig(row.user_id);
+    const lang = cfg?.language || 'ru';
 
     // Display time in KZ local with date context: "сегодня в 11:00", "завтра в 14:00"
-    let displayTime = row.time || '';
+    let displayTime = '';
     if (row.datetime) {
       const localDT = DateTime.fromISO(row.datetime, { zone: 'utc' }).setZone('Asia/Almaty');
       if (localDT.isValid) {
         const kzNow = DateTime.now().setZone('Asia/Almaty');
         const isToday = localDT.hasSame(kzNow, 'day');
         const isTomorrow = localDT.hasSame(kzNow.plus({ days: 1 }), 'day');
-        const dateLabel = isToday ? 'сегодня'
-          : isTomorrow ? 'завтра'
-          : localDT.setLocale('ru').toFormat('d MMMM');
+        const dateLabel = isToday ? (lang === 'ru' ? 'сегодня' : lang === 'kk' ? 'бүгін' : 'today')
+          : isTomorrow ? (lang === 'ru' ? 'завтра' : lang === 'kk' ? 'ертең' : 'tomorrow')
+          : localDT.setLocale(lang === 'ru' ? 'ru' : lang === 'kk' ? 'kk' : 'en').toFormat('d MMMM');
         displayTime = `${dateLabel} в ${localDT.toFormat('HH:mm')}`;
       }
     }
@@ -271,19 +325,19 @@ async function checkReminders() {
     };
 
     const keyboard = new InlineKeyboard()
-      .text('+10 мин', `snz_10_${row.id}`)
-      .text('+30 мин', `snz_30_${row.id}`)
-      .text('+1 час', `snz_60_${row.id}`)
+      .text(lang === 'ru' ? '+10 мин' : lang === 'kk' ? '+10 мин' : '+10 min', `snz_10_${row.id}`)
+      .text(lang === 'ru' ? '+30 мин' : lang === 'kk' ? '+30 мин' : '+30 min', `snz_30_${row.id}`)
+      .text(lang === 'ru' ? '+1 час' : lang === 'kk' ? '+1 сағат' : '+1 hour', `snz_60_${row.id}`)
       .row()
-      .text('Завтра утром', `snz_tmrw_${row.id}`)
-      .text('Готово ✓', `snz_done_${row.id}`);
+      .text(lang === 'ru' ? 'Завтра утром' : lang === 'kk' ? 'Ертең таңертең' : 'Tomorrow morning', `snz_tmrw_${row.id}`)
+      .text(lang === 'ru' ? 'Готово ✓' : lang === 'kk' ? 'Дайын ✓' : 'Done ✓', `snz_done_${row.id}`);
 
     try {
-      await bot.api.sendMessage(row.chat_id, msgs.en, { reply_markup: keyboard });
-      logger.info(`[Scheduler] Sent reminder: "${row.task}" at ${displayTime}`);
+      await bot.api.sendMessage(row.chat_id, msgs[lang] || msgs.en, { reply_markup: keyboard });
+      logger.info(`[Scheduler] Sent DB reminder: "${row.task}" at ${displayTime}`);
 
-      // Mark notified in DB immediately — never re-send
-      db.prepare('UPDATE todos SET notified = 1 WHERE id = ?').run(row.id);
+      // Mark notified in DB immediately — clear snoozed_until
+      db.prepare('UPDATE todos SET notified = 1, snoozed_until = NULL WHERE id = ?').run(row.id);
       logger.info(`[Scheduler] Sent + marked notified: "${row.task}"`);
     } catch (err) {
       logger.error(err, `[Scheduler] Failed to send reminder: "${row.task}"`);

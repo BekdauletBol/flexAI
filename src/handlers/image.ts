@@ -1,5 +1,4 @@
 import { Context, InlineKeyboard } from "grammy";
-import OpenAI from "openai";
 import { config } from "../config.js";
 import { TaskSource } from "../types/analysis.js";
 import { getUserTasks, compareAndSaveImageTasks } from "../services/planStore.js";
@@ -8,6 +7,7 @@ import { logger } from "../logger.js";
 import { setAwaitingImageFollowup, clearAwaitingImageFollowup } from "../services/pendingStore.js";
 import { DateTime } from 'luxon';
 import { v4 as uuid } from 'uuid';
+import { callLLM } from "../services/llm-client.js";
 
 const KZ_ZONE = 'Asia/Almaty';
 
@@ -59,17 +59,6 @@ export function mapSourceAppToTaskSource(sourceApp: string): TaskSource {
 }
 
 export const pendingImageTasks = new Map<number, PendingImageData>();
-
-// ─── OpenAI Vision client (must use OpenAI, not Groq — Groq has no vision) ───
-
-function getVisionClient(): OpenAI {
-  return new OpenAI({
-    apiKey: config.openaiApiKey,
-    ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
-    timeout: 60000,
-    maxRetries: 1,
-  });
-}
 
 // ─── Main Handler ─────────────────────────────────────────────────────────────
 
@@ -258,8 +247,6 @@ async function analyzeScheduleScreenshot(
   existingTasks: any[],
   lang: string,
 ): Promise<ScreenshotAnalysis> {
-  const client = getVisionClient();
-
   const now = DateTime.now().setZone(KZ_ZONE);
   const todayStr = now.toFormat('cccc, MMMM d, yyyy');
   const timeStr = now.toFormat('HH:mm');
@@ -323,43 +310,32 @@ Return ONLY this JSON (no markdown, no extra text):
   "summary": "2-3 sentence summary in ${lang === "ru" ? "Russian" : lang === "kk" ? "Kazakh" : "English"} describing what was found, when the person is free/busy, and any conflicts with existing tasks"
 }`;
 
-  // Use configured model — gpt-4o supports vision on both OpenAI and GitHub Models
-  const visionModel = config.openaiModel.startsWith("gpt-4")
-    ? config.openaiModel
-    : "gpt-4o";
-
-  const response = await client.chat.completions.create({
-    model: visionModel,
-    messages: [
+  const { content } = await callLLM(
+    [
       {
-        role: "user",
+        role: 'user',
         content: [
           {
-            type: "image_url",
+            type: 'image_url',
             image_url: {
               url: `data:image/jpeg;base64,${base64}`,
-              detail: "high",
+              detail: 'high',
             },
           },
-          { type: "text", text: prompt },
+          { type: 'text', text: prompt },
         ],
       },
     ],
-    max_tokens: 2048,
-    temperature: 0.1,
-  });
-
-  const content = response.choices[0]?.message?.content || "{}";
+    { hasImage: true, preferGitHub: true },
+  );
 
   try {
-    // Strip markdown code blocks if present
     const cleaned = content
       .replace(/^```json\s*/i, "")
       .replace(/\s*```$/i, "")
       .trim();
     const parsed = JSON.parse(cleaned) as ScreenshotAnalysis;
 
-    // Ensure arrays exist
     parsed.events = parsed.events || [];
     parsed.free_slots = parsed.free_slots || [];
     parsed.busy_slots = parsed.busy_slots || [];

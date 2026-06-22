@@ -1,4 +1,3 @@
-import OpenAI from 'openai';
 import { config } from '../config.js';
 import { AnalysisResult } from '../types/analysis.js';
 import { v4 as uuid } from 'uuid';
@@ -9,18 +8,10 @@ import { getTasksForDate } from './db.js';
 import { getKzToday } from '../utils/timezone.js';
 import { getUserMemory } from './memoryStore.js';
 import { logger } from '../logger.js';
+import { callLLM } from './llm-client.js';
 
-const fallback = new OpenAI({
-  apiKey: config.openaiApiKey,
-  ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
-  timeout: 120000,
-  maxRetries: 1,
-});
-
-// Use OpenAI for analysis because structured JSON extraction is more reliable
+// Use OpenAI/GitHub Models for analysis because structured JSON extraction is more reliable
 // than Groq's Llama models on complex multilingual transcripts.
-const analysisLlm = fallback;
-const ANALYSIS_MODEL = config.openaiModel;
 
 function cleanJsonContent(content: string): string {
   // Strip markdown code fences and trailing/leading whitespace
@@ -91,18 +82,6 @@ function buildPatternsContextForPrompt(userId: number): string {
     return `\nUser's known daily patterns (for reference only — do NOT use to fill missing times):\n${lines}\n`;
   } catch {
     return '';
-  }
-}
-
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timeoutId: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
-  });
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    clearTimeout(timeoutId!);
   }
 }
 
@@ -271,18 +250,17 @@ ${userId ? buildPatternsContextForPrompt(userId) : ''}`;
 
     logger.debug(`[Analysis] Analyzing (${transcript.length} chars) for user ${userId || 'unknown'} [tz=${temporal.timezone}]...`);
 
-    const response = await withTimeout(analysisLlm.chat.completions.create({
-      model: ANALYSIS_MODEL,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT + contextPrompt },
-        { role: 'user', content: `Analyze this transcript:\n\n"${transcript}"` },
-      ],
+    const { content } = await callLLM([
+      { role: 'system', content: SYSTEM_PROMPT + contextPrompt },
+      { role: 'user', content: `Analyze this transcript:\n\n"${transcript}"` },
+    ], {
+      preferGitHub: true,
       response_format: { type: 'json_object' },
       temperature: 0.3,
       max_tokens: 4096,
-    }), 120000);
+      timeout: 120000,
+    });
 
-    const content = response.choices[0]?.message?.content;
     if (!content) throw new Error('Empty response');
 
     let result: AnalysisResult;
@@ -295,17 +273,16 @@ ${userId ? buildPatternsContextForPrompt(userId) : ''}`;
       // Retry with simplified prompt focused only on todos
       try {
         logger.debug('[Analysis] Retrying with simplified prompt...');
-        const retryResponse = await withTimeout(analysisLlm.chat.completions.create({
-          model: ANALYSIS_MODEL,
-          messages: [
-            { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), datetime ("YYYY-MM-DDTHH:MM:00" or null), duration (number, default 30), reminder_minutes (number or null — minutes before the task to send a reminder). If the user says "remind me in X minutes" about a task, set reminder_minutes on that task. Extract EVERY task mentioned, do not skip any. Preserve foreign terms, acronyms, and brand names verbatim. Language: same as transcript.` + contextPrompt },
-            { role: 'user', content: transcript },
-          ],
+        const { content: retryContent } = await callLLM([
+          { role: 'system', content: `Extract ALL tasks with their times and priorities from the transcript. Return ONLY a JSON object with a "todos" array. Each todo has: task (string), priority ("high"/"medium"/"low"), time ("HH:MM" or null), date ("YYYY-MM-DD" or null), datetime ("YYYY-MM-DDTHH:MM:00" or null), duration (number, default 30), reminder_minutes (number or null — minutes before the task to send a reminder). If the user says "remind me in X minutes" about a task, set reminder_minutes on that task. Extract EVERY task mentioned, do not skip any. Preserve foreign terms, acronyms, and brand names verbatim. Language: same as transcript.` + contextPrompt },
+          { role: 'user', content: transcript },
+        ], {
+          preferGitHub: true,
           response_format: { type: 'json_object' },
           temperature: 0.3,
           max_tokens: 4096,
-        }), 120000);
-        const retryContent = retryResponse.choices[0]?.message?.content;
+          timeout: 120000,
+        });
         if (retryContent) {
           const retryParsed = safeJsonParse(retryContent);
           if (!retryParsed) throw new Error('Retry JSON parse failed');

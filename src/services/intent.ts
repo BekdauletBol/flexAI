@@ -1,36 +1,10 @@
-import OpenAI from "openai";
 import { config } from "../config.js";
 import { TaskSource } from "../types/analysis.js";
 import { getKzToday, getKzTomorrow } from './planStore.js';
-import { groq, GROQ_MODEL, hasGroq } from "./groq.js";
 import { getTemporalContext } from './userConfig.js';
 import { DateTime } from 'luxon';
 import { logger } from '../logger.js';
-
-const fallback = new OpenAI({
-  apiKey: config.openaiApiKey,
-  ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
-  timeout: 60000,
-  maxRetries: 1,
-});
-
-const llm = hasGroq ? groq : fallback;
-const MODEL = hasGroq ? GROQ_MODEL : config.openaiModel;
-
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timeoutId: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(
-      () => reject(new Error(`Timeout after ${ms}ms`)),
-      ms,
-    );
-  });
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    clearTimeout(timeoutId!);
-  }
-}
+import { callLLM, withTimeout } from './llm-client.js';
 
 export interface DateRange {
   date: string;
@@ -547,7 +521,7 @@ function sanitizeIntentResult(result: IntentResult): void {
 }
 
 export async function detectIntent(transcript: string, userId?: number): Promise<IntentResult> {
-  logger.debug({ model: MODEL, baseURL: config.openaiBaseUrl }, "[Intent] Starting detectIntent");
+  logger.debug("[Intent] Starting detectIntent");
 
   // Get user-specific temporal context
   const temporal = getTemporalContext(userId || 0);
@@ -569,21 +543,14 @@ export async function detectIntent(transcript: string, userId?: number): Promise
   let attempts = 0;
   while (attempts < 3) {
     try {
-      const response = await withTimeout(
-        llm.chat.completions.create({
-          model: MODEL,
-          messages,
-          response_format: { type: "json_object" },
-          temperature: 0.1,
-          max_tokens: 500,
-        }),
-        60000,
-      );
+      const { content, provider, model } = await callLLM(messages, {
+        response_format: { type: "json_object" },
+        temperature: 0.1,
+        max_tokens: 500,
+        timeout: 60000,
+      });
 
-      logger.debug({ model: MODEL }, "[Intent] Got response");
-      const content = response.choices[0]?.message?.content;
-      if (!content) throw new Error("Empty response");
-
+      logger.debug({ provider, model }, "[Intent] Got response");
       logger.debug({ content }, "[Intent] Response content");
       const result = JSON.parse(content) as IntentResult;
       result.intent = result.intent || "action";
@@ -595,35 +562,31 @@ export async function detectIntent(transcript: string, userId?: number): Promise
       );
       return result;
     } catch (error: any) {
-      if (error?.status === 429 && attempts < 2) {
+      const is429 = error?.status === 429 || error?.message?.includes('429');
+      if (is429 && attempts < 2) {
         const wait = (attempts + 1) * 10000;
-        logger.warn(`[Intent] Rate limited (${MODEL}), retrying in ${wait / 1000}s... (attempt ${attempts + 1}/3)`);
+        logger.warn(`[Intent] Rate limited, retrying in ${wait / 1000}s... (attempt ${attempts + 1}/3)`);
         await new Promise(r => setTimeout(r, wait));
         attempts++;
         continue;
       }
-      logger.error(`[Intent] ${MODEL} failed (attempt ${attempts + 1}/3):`, error?.message || error);
+      logger.error(`[Intent] Failed (attempt ${attempts + 1}/3):`, error?.message || error);
       break;
     }
   }
 
   // Fallback to gpt-4.1 via GitHub token
-  if (MODEL !== 'gpt-4.1') {
+  if (config.openaiModel !== 'gpt-4.1') {
     logger.debug('[Intent] Falling back to gpt-4.1 for intent detection');
     try {
-      const response = await withTimeout(
-        fallback.chat.completions.create({
-          model: 'gpt-4.1',
-          messages,
-          response_format: { type: "json_object" },
-          temperature: 0.1,
-          max_tokens: 500,
-        }),
-        60000,
-      );
-
-      const content = response.choices[0]?.message?.content;
-      if (!content) throw new Error("Empty fallback response");
+      const { content } = await callLLM(messages, {
+        preferGitHub: true,
+        fallbackModel: 'gpt-4.1',
+        response_format: { type: "json_object" },
+        temperature: 0.1,
+        max_tokens: 500,
+        timeout: 60000,
+      });
 
       logger.debug({ content }, "[Intent] Fallback response");
       const result = JSON.parse(content) as IntentResult;
@@ -652,22 +615,18 @@ export async function askQuestion(
   const lang =
     language === "ru" ? "Russian" : language === "kk" ? "Kazakh" : "English";
   try {
-    const response = await withTimeout(
-      llm.chat.completions.create({
-        model: MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `You are a personal AI assistant. You have access to all the user's plans and memory. Reply briefly, in ${lang}, like a smart assistant. Data: ${plansData} ${memoryData}`,
-          },
-          { role: "user", content: transcript },
-        ],
-        temperature: 0.3,
-        max_tokens: 500,
-      }),
-      60000,
-    );
-    return response.choices[0]?.message?.content || "...";
+    const { content } = await callLLM([
+      {
+        role: "system",
+        content: `You are a personal AI assistant. You have access to all the user's plans and memory. Reply briefly, in ${lang}, like a smart assistant. Data: ${plansData} ${memoryData}`,
+      },
+      { role: "user", content: transcript },
+    ], {
+      temperature: 0.3,
+      max_tokens: 500,
+      timeout: 60000,
+    });
+    return content || "...";
   } catch (error) {
     logger.error({ err: error }, "[Intent] Question failed");
     return "Error getting answer.";
@@ -682,22 +641,18 @@ export async function chatReply(
   const lang =
     language === "ru" ? "Russian" : language === "kk" ? "Kazakh" : "English";
   try {
-    const response = await withTimeout(
-      llm.chat.completions.create({
-        model: MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `You are the user's personal AI assistant. Reply briefly and to the point in ${lang}. User context: ${memoryData}`,
-          },
-          { role: "user", content: transcript },
-        ],
-        temperature: 0.5,
-        max_tokens: 500,
-      }),
-      60000,
-    );
-    return response.choices[0]?.message?.content || "...";
+    const { content } = await callLLM([
+      {
+        role: "system",
+        content: `You are the user's personal AI assistant. Reply briefly and to the point in ${lang}. User context: ${memoryData}`,
+      },
+      { role: "user", content: transcript },
+    ], {
+      temperature: 0.5,
+      max_tokens: 500,
+      timeout: 60000,
+    });
+    return content || "...";
   } catch (error) {
     logger.error({ err: error }, "[Intent] Chat failed");
     return "...";
@@ -721,22 +676,17 @@ export async function extractRescheduleInfo(
     const monthDay = localDt.toFormat('MMMM d');
     const year = localDt.year;
 
-    const response = await withTimeout(
-      llm.chat.completions.create({
-        model: MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `Extract reschedule information. Today is ${dayOfWeek}, ${monthDay}, ${year} (${temporal.timezone}). Current time: ${temporal.localTime}. Today's date: ${temporal.localDate}. Preserve foreign terms, acronyms, and brand names verbatim in the task description. Return ONLY JSON: { "task": "task description to find", "newTime": "HH:MM", "date": "YYYY-MM-DD or null if today" }`,
-          },
-          { role: "user", content: transcript },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.1,
-      }),
-      60000,
-    );
-    const content = response.choices[0]?.message?.content;
+    const { content } = await callLLM([
+      {
+        role: "system",
+        content: `Extract reschedule information. Today is ${dayOfWeek}, ${monthDay}, ${year} (${temporal.timezone}). Current time: ${temporal.localTime}. Today's date: ${temporal.localDate}. Preserve foreign terms, acronyms, and brand names verbatim in the task description. Return ONLY JSON: { "task": "task description to find", "newTime": "HH:MM", "date": "YYYY-MM-DD or null if today" }`,
+      },
+      { role: "user", content: transcript },
+    ], {
+      response_format: { type: "json_object" },
+      temperature: 0.1,
+      timeout: 60000,
+    });
     if (!content) return null;
     return JSON.parse(content) as RescheduleExtraction;
   } catch (error) {
@@ -762,22 +712,17 @@ export async function extractDeleteInfo(
     const monthDay = localDt.toFormat('MMMM d');
     const year = localDt.year;
 
-    const response = await withTimeout(
-      llm.chat.completions.create({
-        model: MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `Extract delete information. Today is ${dayOfWeek}, ${monthDay}, ${year} (${temporal.timezone}). Current date: ${temporal.localDate}. Preserve foreign terms, acronyms, and brand names verbatim in the task name. Return ONLY JSON: { "type": "task" | "day", "task": "task name if type=task", "date": "YYYY-MM-DD date to delete if type=day, or null" }`,
-          },
-          { role: "user", content: transcript },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.1,
-      }),
-      60000,
-    );
-    const content = response.choices[0]?.message?.content;
+    const { content } = await callLLM([
+      {
+        role: "system",
+        content: `Extract delete information. Today is ${dayOfWeek}, ${monthDay}, ${year} (${temporal.timezone}). Current date: ${temporal.localDate}. Preserve foreign terms, acronyms, and brand names verbatim in the task name. Return ONLY JSON: { "type": "task" | "day", "task": "task name if type=task", "date": "YYYY-MM-DD date to delete if type=day, or null" }`,
+      },
+      { role: "user", content: transcript },
+    ], {
+      response_format: { type: "json_object" },
+      temperature: 0.1,
+      timeout: 60000,
+    });
     if (!content) return null;
     return JSON.parse(content) as DeleteExtraction;
   } catch (error) {
@@ -797,22 +742,17 @@ export async function extractViewInfo(
   try {
     const now = DateTime.now().setZone('Asia/Almaty');
     const dateStr = now.toFormat('cccc, MMMM d, yyyy');
-    const response = await withTimeout(
-      llm.chat.completions.create({
-        model: MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `Extract view/plans information. Today is ${dateStr}. Return ONLY JSON: { "date": "YYYY-MM-DD specific date or null", "period": "today" | "tomorrow" | "week" | "month" | null }`,
-          },
-          { role: "user", content: transcript },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.1,
-      }),
-      60000,
-    );
-    const content = response.choices[0]?.message?.content;
+    const { content } = await callLLM([
+      {
+        role: "system",
+        content: `Extract view/plans information. Today is ${dateStr}. Return ONLY JSON: { "date": "YYYY-MM-DD specific date or null", "period": "today" | "tomorrow" | "week" | "month" | null }`,
+      },
+      { role: "user", content: transcript },
+    ], {
+      response_format: { type: "json_object" },
+      temperature: 0.1,
+      timeout: 60000,
+    });
     if (!content) return null;
     return JSON.parse(content) as ViewExtraction;
   } catch (error) {
@@ -844,26 +784,21 @@ export async function extractReportInfo(
     const monthDay = localDt.toFormat('MMMM d');
     const year = localDt.year;
 
-    const response = await withTimeout(
-      llm.chat.completions.create({
-        model: MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `Extract report filters from the user's message. Today is ${dayOfWeek}, ${monthDay}, ${year} (${temporal.timezone}). Current local time: ${temporal.localTime}. Today's date: ${temporal.localDate}. All dates must be in YYYY-MM-DD format in the user's local timezone. Return ONLY JSON: { "target_date": "YYYY-MM-DD or null", "target_time": "HH:MM or null (tasks before this time)", "after_time": "HH:MM or null (tasks after this time)", "date_from": "YYYY-MM-DD or null", "date_to": "YYYY-MM-DD or null", "date_ranges": [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}], "period": "today|tomorrow|week|month|all or null", "priority_filter": "high|medium|low or null", "source": "teams|telegram|voice|manual or null" }.
+    const { content } = await callLLM([
+      {
+        role: "system",
+        content: `Extract report filters from the user's message. Today is ${dayOfWeek}, ${monthDay}, ${year} (${temporal.timezone}). Current local time: ${temporal.localTime}. Today's date: ${temporal.localDate}. All dates must be in YYYY-MM-DD format in the user's local timezone. Return ONLY JSON: { "target_date": "YYYY-MM-DD or null", "target_time": "HH:MM or null (tasks before this time)", "after_time": "HH:MM or null (tasks after this time)", "date_from": "YYYY-MM-DD or null", "date_to": "YYYY-MM-DD or null", "date_ranges": [{"date": "YYYY-MM-DD", "beforeTime": "HH:MM or null", "afterTime": "HH:MM or null"}], "period": "today|tomorrow|week|month|all or null", "priority_filter": "high|medium|low or null", "source": "teams|telegram|voice|manual or null" }.
             Date/period examples: "на сегодня"/"бүгін"/"today" → period="today"; "на завтра"/"ертең"/"tomorrow" → period="tomorrow"; "отчёт на 16 июня"/"планы на завтра" → target_date="YYYY-MM-DD"; "на этой неделе"/"осы аптада"/"this week" → period="week"; "за этот месяц"/"бұл ай"/"this month" → period="month".
             If user asks for a report without specifying a date, set period="today".
             Source examples: "from the team/Teams", "из Teams/команды", "Teams-тен" → "teams"; "from Telegram", "Telegram-дан" → "telegram"; "voice tasks", "дауыстық тапсырмалар" → "voice"; "manual", "қолмен қосылған" → "manual".
             Time examples: "до 17:00", "17:00-ға дейін", "before 17:00" → target_time="17:00"; "после 17:00", "17:00-ден кейін", "after 17:00" → after_time="17:00". `,
-          },
-          { role: "user", content: transcript },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.1,
-      }),
-      60000,
-    );
-    const content = response.choices[0]?.message?.content;
+      },
+      { role: "user", content: transcript },
+    ], {
+      response_format: { type: "json_object" },
+      temperature: 0.1,
+      timeout: 60000,
+    });
     if (!content) return null;
     return JSON.parse(content) as ReportExtraction;
   } catch (error) {
@@ -877,26 +812,21 @@ export async function extractMemoryUpdate(
   currentMemory: string,
 ): Promise<string | null> {
   try {
-    const response = await withTimeout(
-      llm.chat.completions.create({
-        model: MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `You update the user's long-term memory based on their messages. Current memory: ${currentMemory}
+    const { content } = await callLLM([
+      {
+        role: "system",
+        content: `You update the user's long-term memory based on their messages. Current memory: ${currentMemory}
 
 Return ONLY JSON: { "should_update": boolean, "memory_update": { "habits": string[], "projects": string[], "preferences": Record<string,string>, "important_dates": string[], "patterns": Record<string,string>, "places": string[] } }
 
 Only set should_update=true if there is genuinely new info worth remembering. Otherwise return {"should_update":false}.`,
-          },
-          { role: "user", content: transcript },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-      }),
-      60000,
-    );
-    const content = response.choices[0]?.message?.content;
+      },
+      { role: "user", content: transcript },
+    ], {
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+      timeout: 60000,
+    });
     if (!content) return null;
     return content;
   } catch (error) {
