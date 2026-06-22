@@ -1261,6 +1261,17 @@ async function handleRescheduleIntent(
   let taskQuery = intentResult.target_task;
   let targetTime = intentResult.target_time;
   let targetDate = intentResult.target_date;
+  let fromTime = intentResult.from_time;
+
+  // Normalize time: add leading zero if format is "H:MM" → "HH:MM"
+  if (targetTime) {
+    const norm = targetTime.match(/^(\d):(\d{2})$/);
+    if (norm) targetTime = `0${norm[1]}:${norm[2]}`;
+  }
+  if (fromTime) {
+    const norm = fromTime.match(/^(\d):(\d{2})$/);
+    if (norm) fromTime = `0${norm[1]}:${norm[2]}`;
+  }
 
   // Validate time format: must be HH:MM with hours 00-23 and minutes 00-59
   if (targetTime) {
@@ -1375,7 +1386,32 @@ async function handleRescheduleIntent(
   }
 
   // Both task and time specified — reschedule directly
-  const found = findTaskByText(userId, taskQuery, targetDate);
+  let found = findTaskByText(userId, taskQuery, targetDate);
+
+  // Fallback: if task not found by name and from_time is available, search by time
+  if (!found && fromTime) {
+    logger.info('[Reschedule] Name search failed, trying fallback by from_time="%s"', fromTime);
+    const dateFilter = targetDate || undefined;
+    const candidates = getUserTasks(userId).filter((t) =>
+      !t.done && t.time === fromTime && (!dateFilter || t.date === dateFilter)
+    );
+    if (candidates.length === 1) {
+      found = { plan: { id: 0 } as any, todo: candidates[0] };
+      logger.info('[Reschedule] Fallback by time matched: "%s"', candidates[0].task);
+    } else if (candidates.length > 1) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch {}
+      const list = candidates.map((t, i) => `${i + 1}. ${t.task} · ${t.time}`).join('\n');
+      await ctx.reply(
+        lang === 'ru'
+          ? `Найдено несколько задач на ${fromTime}:\n\n${list}\n\nВведите номер.`
+          : `Found multiple tasks at ${fromTime}:\n\n${list}\n\nEnter the number.`
+      );
+      return;
+    }
+  }
+
   if (!found) {
     try {
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);

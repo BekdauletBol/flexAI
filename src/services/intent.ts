@@ -40,6 +40,7 @@ export interface IntentResult {
   date_from?: string;
   date_to?: string;
   reminder_minutes?: number | null;
+  from_time?: string;
 }
 
 const SYSTEM_PROMPT = `Classify the user's message into ONE intent. Return ONLY this JSON.
@@ -71,12 +72,12 @@ FIELDS PER INTENT (only populate these, set all others to null):
 - "action": target_date, target_time ONLY. Do NOT set date_ranges, reminder_minutes, or filter fields.
 - "report", "query": target_date, target_time, after_time, date_from, date_to, date_ranges, period, priority_filter, source_filter. Do NOT set reminder_minutes.
 - "reminder": reminder_minutes, target_task ONLY. Do NOT set date_ranges or filter fields.
-- "reschedule", "complete", "delete": target_task, target_date, target_time ONLY.
+- "reschedule", "complete", "delete": target_task, target_date, target_time ONLY. For reschedule: also extract from_time (the original task time, "из 8:30" → "08:30", "с 14:00" → "14:00"). Set from_time to null if no original time mentioned.
 - "free_time_query": target_date ONLY.
 - "cancel_reminder": target_task ONLY.
 - "social", "clear", "summary", "list_reminders": no extra fields needed (all null).
 
-{ "intent": "action|query|reschedule|delete|complete|report|clear|summary|social|free_time_query|reminder|list_reminders|cancel_reminder", "confidence": 0.0-1.0, "target_task": "string|null", "target_date": "YYYY-MM-DD|null", "target_time": "HH:MM|null", "after_time": "HH:MM|null", "date_from": "YYYY-MM-DD|null", "date_to": "YYYY-MM-DD|null", "date_ranges": [{"date":"YYYY-MM-DD","beforeTime":"HH:MM|null","afterTime":"HH:MM|null"}], "priority_filter": "high|medium|low|null", "source_filter": "teams|telegram|voice|manual|null", "reminder_minutes": "number|null" }`;
+{ "intent": "action|query|reschedule|delete|complete|report|clear|summary|social|free_time_query|reminder|list_reminders|cancel_reminder", "confidence": 0.0-1.0, "target_task": "string|null", "target_date": "YYYY-MM-DD|null", "target_time": "HH:MM|null", "from_time": "HH:MM|null", "after_time": "HH:MM|null", "date_from": "YYYY-MM-DD|null", "date_to": "YYYY-MM-DD|null", "date_ranges": [{"date":"YYYY-MM-DD","beforeTime":"HH:MM|null","afterTime":"HH:MM|null"}], "priority_filter": "high|medium|low|null", "source_filter": "teams|telegram|voice|manual|null", "reminder_minutes": "number|null" }`;
 
 const MONTHS_RU: Record<string, number> = {
   'января': 1, 'январь': 1, 'февраля': 2, 'февраль': 2, 'марта': 3, 'март': 3,
@@ -495,7 +496,7 @@ function sanitizeIntentResult(result: IntentResult): void {
     result.source_filter = undefined;
     result.period = undefined;
   }
-  // reschedule/complete/delete: keep target_task, target_date, target_time only
+  // reschedule/complete/delete: keep target_task, target_date, target_time, from_time only
   else if (intent === 'reschedule' || intent === 'complete' || intent === 'delete') {
     result.reminder_minutes = null;
     result.date_ranges = undefined;
@@ -505,6 +506,8 @@ function sanitizeIntentResult(result: IntentResult): void {
     result.priority_filter = undefined;
     result.source_filter = undefined;
     result.period = undefined;
+    // from_time: kept for reschedule (original time "из 8:30"), nulled for complete/delete
+    if (intent !== 'reschedule') result.from_time = undefined;
   }
   // social/clear/summary/free_time_query/list_reminders/cancel_reminder: minimal fields
   else {

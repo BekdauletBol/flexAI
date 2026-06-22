@@ -8,6 +8,7 @@ import { setAwaitingImageFollowup, clearAwaitingImageFollowup } from "../service
 import { DateTime } from 'luxon';
 import { v4 as uuid } from 'uuid';
 import { callLLM } from "../services/llm-client.js";
+import { storeConflict } from "../services/conflictStore.js";
 
 const KZ_ZONE = 'Asia/Almaty';
 
@@ -78,6 +79,8 @@ export async function handleImage(ctx: Context) {
         ? "Скриншотты талдап жатырмын..."
         : "Analyzing screenshot...",
   );
+
+  let conflictsHandled = false;
 
   try {
     // Download highest resolution photo
@@ -174,17 +177,21 @@ export async function handleImage(ctx: Context) {
             ? `⚠️ УАҚЫТ ҚАЙШЫЛЫҒЫ\n\nЖаңа тапсырма: ${pair.newTask.task} (${pair.newTask.time})\nБар тапсырма: ${pair.existingTask.task} (${pair.existingTask.time})\n\nНе істейміз?`
             : `⚠️ TIME CONFLICT\n\nNew: ${pair.newTask.task} (${pair.newTask.time})\nExisting: ${pair.existingTask.task} (${pair.existingTask.time})\n\nWhat now?`;
 
+        // Store conflict pair in memory, use short key in callback_data (Telegram limit: 64 bytes)
+        const conflictKey = storeConflict(pair.newTask.id, pair.existingTask.id);
+
         const conflictKb = new InlineKeyboard()
           .text(lang === 'ru' ? 'Оставить Teams' : lang === 'kk' ? 'Teams қалдыру' : 'Keep Teams',
-            `conflict_keep_teams:${pair.newTask.id}:${pair.existingTask.id}`)
+            `conflict_keep_teams:${conflictKey}`)
           .text(lang === 'ru' ? 'Оставить мою' : lang === 'kk' ? 'Менікін қалдыру' : 'Keep mine',
-            `conflict_keep_mine:${pair.newTask.id}:${pair.existingTask.id}`)
+            `conflict_keep_mine:${conflictKey}`)
           .row()
           .text(lang === 'ru' ? 'Оставить обе ⚠️' : lang === 'kk' ? 'Екеуін де қалдыру ⚠️' : 'Keep both ⚠️',
-            `conflict_keep_both:${pair.newTask.id}:${pair.existingTask.id}`);
+            `conflict_keep_both:${conflictKey}`);
 
         await ctx.reply(conflictMsg, { reply_markup: conflictKb });
       }
+      conflictsHandled = true;
     }
 
     // Build keyboard for the main analysis message (or just the keyboard if no conflicts)
@@ -227,16 +234,19 @@ export async function handleImage(ctx: Context) {
     }
   } catch (err) {
     logger.error(err, "[Image] Analysis failed");
-    try {
-      await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
-    } catch {}
-    await ctx.reply(
-      lang === "ru"
-        ? "Не удалось проанализировать скриншот. Попробуй ещё раз."
-        : lang === "kk"
-          ? "Скриншотты талдау мүмкін болмады. Қайталап көр."
-          : "Failed to analyze screenshot. Please try again.",
-    );
+    // Don't show error if conflicts were already sent successfully
+    if (!conflictsHandled) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch {}
+      await ctx.reply(
+        lang === "ru"
+          ? "Не удалось проанализировать скриншот. Попробуй ещё раз."
+          : lang === "kk"
+            ? "Скриншотты талдау мүмкін болмады. Қайталап көр."
+            : "Failed to analyze screenshot. Please try again.",
+      );
+    }
   }
 }
 

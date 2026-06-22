@@ -1348,13 +1348,18 @@ bot.callbackQuery(/^conflict_skip_(.+)$/, async (ctx) => {
 
 // ─── Image/Teams conflict resolution callbacks ─────────────────────────────
 
-bot.callbackQuery(/^conflict_keep_teams:(.+):(.+)$/, async (ctx) => {
-  const newId = ctx.match[1];
-  const existingId = ctx.match[2];
+bot.callbackQuery(/^conflict_keep_teams:(.+)$/, async (ctx) => {
+  const conflictKey = ctx.match[1];
+  const { resolveConflictKey } = await import("./services/conflictStore.js");
+  const ids = resolveConflictKey(conflictKey);
+  if (!ids) {
+    await ctx.answerCallbackQuery("Expired.");
+    return;
+  }
   const { resolveConflict } = await import("./services/db.js");
 
   // Keep the Teams task (new), delete the existing one
-  resolveConflict(newId, existingId);
+  resolveConflict(ids.newId, ids.existingId);
 
   await ctx.answerCallbackQuery();
   if (ctx.callbackQuery.message) {
@@ -1368,13 +1373,18 @@ bot.callbackQuery(/^conflict_keep_teams:(.+):(.+)$/, async (ctx) => {
   }
 });
 
-bot.callbackQuery(/^conflict_keep_mine:(.+):(.+)$/, async (ctx) => {
-  const newId = ctx.match[1];
-  const existingId = ctx.match[2];
+bot.callbackQuery(/^conflict_keep_mine:(.+)$/, async (ctx) => {
+  const conflictKey = ctx.match[1];
+  const { resolveConflictKey } = await import("./services/conflictStore.js");
+  const ids = resolveConflictKey(conflictKey);
+  if (!ids) {
+    await ctx.answerCallbackQuery("Expired.");
+    return;
+  }
   const { resolveConflict } = await import("./services/db.js");
 
   // Keep the existing task, delete the Teams one
-  resolveConflict(existingId, newId);
+  resolveConflict(ids.existingId, ids.newId);
 
   await ctx.answerCallbackQuery();
   if (ctx.callbackQuery.message) {
@@ -1388,13 +1398,18 @@ bot.callbackQuery(/^conflict_keep_mine:(.+):(.+)$/, async (ctx) => {
   }
 });
 
-bot.callbackQuery(/^conflict_keep_both:(.+):(.+)$/, async (ctx) => {
-  const newId = ctx.match[1];
-  const existingId = ctx.match[2];
+bot.callbackQuery(/^conflict_keep_both:(.+)$/, async (ctx) => {
+  const conflictKey = ctx.match[1];
+  const { resolveConflictKey } = await import("./services/conflictStore.js");
+  const ids = resolveConflictKey(conflictKey);
+  if (!ids) {
+    await ctx.answerCallbackQuery("Expired.");
+    return;
+  }
   const { markConflict } = await import("./services/db.js");
 
   // Keep both, mark as conflicting
-  markConflict(newId, existingId);
+  markConflict(ids.newId, ids.existingId);
 
   await ctx.answerCallbackQuery();
   if (ctx.callbackQuery.message) {

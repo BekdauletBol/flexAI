@@ -6,6 +6,38 @@ import { v4 as uuid } from 'uuid';
 import { logger } from '../logger.js';
 export { detectTimeConflicts, getKzToday, getKzTomorrow };
 
+// ─── Name similarity ──────────────────────────────────────────────────────────
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+/** Check if two task names are similar enough to be considered duplicates */
+function namesAreSimilar(a: string, b: string): boolean {
+  const na = a.toLowerCase().trim();
+  const nb = b.toLowerCase().trim();
+  if (na === nb) return true;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const maxLen = Math.max(na.length, nb.length);
+  if (maxLen === 0) return true;
+  const distance = levenshtein(na, nb);
+  const similarity = 1 - distance / maxLen;
+  return similarity > 0.8;
+}
+
 // ─── KZ date helpers ───────────────────────────────────────────────────────────
 // getKzToday() and getKzTomorrow() are now in timezone.ts (luxon-based)
 
@@ -889,6 +921,13 @@ export function compareAndSaveImageTasks(
       const exEnd = exStart + (existing.duration || 30);
 
       if (newStart < exEnd && newEnd > exStart) {
+        // Time overlaps — check name similarity before flagging as conflict
+        if (namesAreSimilar(todo.task, existing.task)) {
+          // Duplicate: same time + similar name → silently skip
+          logger.debug('[Image] Duplicate detected (similar name + same time): "%s" ≈ "%s"', todo.task, existing.task);
+          hasConflict = true;
+          break;
+        }
         conflicts.push({ newTask: todo, existingTask: existing });
         hasConflict = true;
         break;
