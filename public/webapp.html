@@ -540,7 +540,7 @@
 
   function parseTime(time) {
     if (!time) return 9999;
-    const [h, m] = time.split(':').map(Number);
+    const [h, m] = time.replace('.', ':').split(':').map(Number);
     return h * 60 + (m || 0);
   }
 

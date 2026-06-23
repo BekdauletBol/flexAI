@@ -41,7 +41,7 @@ function getEventTime(todo: TodoItem): DateTime | null {
     return parseEventTimeAsKZ(todo.datetime);
   }
   if (todo.time) {
-    const match = todo.time.match(/^(\d{1,2}):(\d{2})$/);
+    const match = todo.time.match(/^(\d{1,2})[.:](\d{2})$/);
     if (match) {
       const hours = parseInt(match[1]);
       const minutes = parseInt(match[2]);
@@ -143,7 +143,7 @@ export function scheduleReminders(chatId: number, userId: number, todos: TodoIte
 }
 
 function parseTimeString(timeStr: string): DateTime | null {
-  const match = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+  const match = timeStr.match(/^(\d{1,2})[.:](\d{2})$/);
   if (match) {
     const hours = parseInt(match[1]);
     const minutes = parseInt(match[2]);

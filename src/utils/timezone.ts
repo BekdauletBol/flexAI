@@ -66,6 +66,16 @@ export function getKzTomorrow(): string {
   return nowKZ().plus({ days: 1 }).toFormat('yyyy-MM-dd');
 }
 
+// ─── Time normalization ───────────────────────────────────────────────────────
+
+/** Normalize time string: "14.18" → "14:18", "4:05" → "04:05", "4.05" → "04:05". */
+export function normalizeTime(timeStr: string): string {
+  let s = timeStr.replace('.', ':');
+  const m = s.match(/^(\d):(\d{2})$/);
+  if (m) s = `0${m[1]}:${m[2]}`;
+  return s;
+}
+
 // ─── Legacy exports for backward compat ──────────────────────────────────────
 
 export const KAZAKHSTAN_OFFSET_HOURS = 5;

@@ -8,6 +8,7 @@ import { setAwaitingImageFollowup, clearAwaitingImageFollowup } from "../service
 import { DateTime } from 'luxon';
 import { v4 as uuid } from 'uuid';
 import { callLLM } from "../services/llm-client.js";
+import { normalizeTime } from '../utils/timezone.js';
 import { storeConflict } from "../services/conflictStore.js";
 
 const KZ_ZONE = 'Asia/Almaty';
@@ -523,13 +524,13 @@ function findConflictsWithExisting(
 
   for (const event of newEvents) {
     if (!event.time) continue;
-    const [newH, newM] = event.time.split(":").map(Number);
+    const [newH, newM] = normalizeTime(event.time).split(":").map(Number);
     const newStart = newH * 60 + newM;
     const newEnd = newStart + (event.duration_minutes || 30);
 
     for (const task of existingTasks) {
       if (!task.time) continue;
-      const [exH, exM] = task.time.split(":").map(Number);
+      const [exH, exM] = normalizeTime(task.time).split(":").map(Number);
       const exStart = exH * 60 + exM;
       const exEnd = exStart + (task.duration || 30);
 

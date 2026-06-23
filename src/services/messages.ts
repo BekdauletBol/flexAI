@@ -2,6 +2,7 @@ import { InlineKeyboard } from "grammy";
 import { TodoItem, AnalysisResult, TaskSource } from "../types/analysis.js";
 import { Conflict } from "./planStore.js";
 import { DateTime } from 'luxon';
+import { normalizeTime } from '../utils/timezone.js';
 
 const KZ_ZONE = 'Asia/Almaty';
 
@@ -135,7 +136,7 @@ export function buildConflictMessage(
 /** Add minutes to HH:mm string, returns new HH:mm */
 function addMinutesToTime(timeStr: string, minutes: number): string {
   if (!timeStr || timeStr === '—:——') return '—:——';
-  const parts = timeStr.split(':').map(Number);
+  const parts = normalizeTime(timeStr).split(':').map(Number);
   if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) return timeStr;
   const totalMins = parts[0] * 60 + parts[1] + minutes;
   const h = Math.floor(totalMins / 60) % 24;

@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { transcribeAudio } from "../services/whisper.js";
 import { analyzeTranscript } from "../services/analysis.js";
 import { DateTime } from 'luxon';
-import { kzLocalToUTC } from '../utils/timezone.js';
+import { kzLocalToUTC, normalizeTime } from '../utils/timezone.js';
 
 const KZ_ZONE = 'Asia/Almaty';
 import {
@@ -1265,12 +1265,14 @@ async function handleRescheduleIntent(
   let targetDate = intentResult.target_date;
   let fromTime = intentResult.from_time;
 
-  // Normalize time: add leading zero if format is "H:MM" → "HH:MM"
+  // Normalize time: add leading zero if format is "H:MM" → "HH:MM", replace "." with ":"
   if (targetTime) {
+    targetTime = targetTime.replace('.', ':');
     const norm = targetTime.match(/^(\d):(\d{2})$/);
     if (norm) targetTime = `0${norm[1]}:${norm[2]}`;
   }
   if (fromTime) {
+    fromTime = fromTime.replace('.', ':');
     const norm = fromTime.match(/^(\d):(\d{2})$/);
     if (norm) fromTime = `0${norm[1]}:${norm[2]}`;
   }
@@ -2151,8 +2153,8 @@ export async function processTextInput(
           year: parseInt(task.date!.split('-')[0]),
           month: parseInt(task.date!.split('-')[1]),
           day: parseInt(task.date!.split('-')[2]),
-          hour: parseInt(extractedTime.split(':')[0]),
-          minute: parseInt(extractedTime.split(':')[1]),
+          hour: parseInt(normalizeTime(extractedTime).split(':')[0]),
+          minute: parseInt(normalizeTime(extractedTime).split(':')[1]),
         },
         { zone: 'Asia/Almaty' },
       ).toUTC().toISO()!;
@@ -2403,7 +2405,7 @@ export async function routeByIntent(
 }
 
 function parseTimeToMinutes(time: string): number {
-  const [h, m] = time.split(':').map(Number);
+  const [h, m] = normalizeTime(time).split(':').map(Number);
   return h * 60 + m;
 }
 
@@ -2421,7 +2423,7 @@ function getPatternLabel(patternName: string, lang: string): string {
 }
 
 function getTriggerTimeStr(time: string, offsetMinutes: number): string {
-  const [h, m] = time.split(":").map(Number);
+  const [h, m] = normalizeTime(time).split(":").map(Number);
   const d = DateTime.now().setZone(KZ_ZONE).set({ hour: h, minute: m, second: 0, millisecond: 0 }).minus({ minutes: offsetMinutes });
   return d.toFormat('HH:mm');
 }

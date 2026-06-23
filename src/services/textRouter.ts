@@ -40,7 +40,7 @@ function classifyIntentFast(text: string): { intent: 'complete' | 'reschedule' |
     const m = text.match(/(?:move|reschedule|change|shift)\s+(.+?)\s+(?:to)\s+(.+)/i);
     const taskDesc = m ? m[1].trim() : '';
     const timeStr = m?.[2]?.trim();
-    const tm = timeStr ? timeStr.match(/(\d{1,2}):(\d{2})/) : null;
+    const tm = timeStr ? timeStr.match(/(\d{1,2})[.:](\d{2})/) : null;
     return { intent: 'reschedule', taskDescription: taskDesc, newTime: tm ? `${tm[1].padStart(2, '0')}:${tm[2]}` : timeStr };
   }
   if (/(перенес(?:ти|и)|передвинь|измени)\s/.test(lower)) {
@@ -49,14 +49,14 @@ function classifyIntentFast(text: string): { intent: 'complete' | 'reschedule' |
     if (m) {
       const taskDesc = m[1].trim();
       const timeStr = m[3]?.trim();
-      const tm = timeStr ? timeStr.match(/(\d{1,2}):(\d{2})/) : null;
+      const tm = timeStr ? timeStr.match(/(\d{1,2})[.:](\d{2})/) : null;
       return { intent: 'reschedule', taskDescription: taskDesc, newTime: tm ? `${tm[1].padStart(2, '0')}:${tm[2]}` : timeStr || m[2]?.trim() };
     }
     // Fallback: try "X на Y" pattern
     m = text.match(/(?:перенес[ти]?|передвинь|измени)\s+(.+?)\s+на\s+(.+)/i);
     const taskDesc = m ? m[1].trim() : '';
     const timeStr = m?.[2]?.trim();
-    const tm = timeStr ? timeStr.match(/(\d{1,2}):(\d{2})/) : null;
+    const tm = timeStr ? timeStr.match(/(\d{1,2})[.:](\d{2})/) : null;
     return { intent: 'reschedule', taskDescription: taskDesc, newTime: tm ? `${tm[1].padStart(2, '0')}:${tm[2]}` : timeStr };
   }
 

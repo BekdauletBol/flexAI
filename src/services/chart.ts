@@ -14,7 +14,7 @@ function priorityColor(p: string, done: boolean): string {
 
 function parseTime(time?: string): number {
   if (!time) return 9;
-  const m = time.match(/^(\d{1,2}):(\d{2})$/);
+  const m = time.match(/^(\d{1,2})[.:](\d{2})$/);
   return m ? parseInt(m[1]) + parseInt(m[2]) / 60 : 9;
 }
 

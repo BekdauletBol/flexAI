@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { DateTime } from 'luxon';
-import { kzLocalToUTC } from '../utils/timezone.js';
+import { kzLocalToUTC, normalizeTime } from '../utils/timezone.js';
 
 const DB_PATH = process.env.FLEXAI_DB_PATH
   ? path.resolve(process.env.FLEXAI_DB_PATH)
@@ -502,7 +502,7 @@ export function getUserTasks(userId: number) {
 
 function getTimeMinutes(todo: any): number | null {
   if (todo.time) {
-    const parts = todo.time.split(':');
+    const parts = normalizeTime(todo.time).split(':');
     if (parts.length === 2) {
       return parseInt(parts[0]) * 60 + parseInt(parts[1]);
     }

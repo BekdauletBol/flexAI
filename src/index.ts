@@ -1753,6 +1753,12 @@ function buildOneByOneMessage(
   return lines.join("\n");
 }
 
+function timeToMinutes(t: string): number {
+  const s = t.replace('.', ':');
+  const [h, m] = s.split(':').map(Number);
+  return h * 60 + m;
+}
+
 bot.callbackQuery(/^img_one_by_one_(\d+)$/, async (ctx) => {
   const userId = parseInt(ctx.match[1], 10);
   const data = pendingImageTasks.get(userId);
@@ -1773,12 +1779,8 @@ bot.callbackQuery(/^img_one_by_one_(\d+)$/, async (ctx) => {
       (t) =>
         t.time &&
         task.time &&
-        Math.abs(
-          parseInt(t.time.split(":")[0]) * 60 +
-            parseInt(t.time.split(":")[1]) -
-            (parseInt(task.time.split(":")[0]) * 60 +
-              parseInt(task.time.split(":")[1])),
-        ) < (task.duration_minutes || 30),
+        Math.abs(timeToMinutes(t.time) - timeToMinutes(task.time)) <
+          (task.duration_minutes || 30),
     )
     .map((t) => `${t.task} (${t.time})`);
 
@@ -1818,12 +1820,8 @@ bot.callbackQuery(/^img_evt_add_(\d+)_(\d+)$/, async (ctx) => {
       (t) =>
         t.time &&
         task.time &&
-        Math.abs(
-          parseInt(t.time.split(":")[0]) * 60 +
-            parseInt(t.time.split(":")[1]) -
-            (parseInt(task.time.split(":")[0]) * 60 +
-              parseInt(task.time.split(":")[1])),
-        ) < (task.duration_minutes || 30),
+        Math.abs(timeToMinutes(t.time) - timeToMinutes(task.time)) <
+          (task.duration_minutes || 30),
     )
     .map((t) => `${t.task} (${t.time})`);
 
@@ -1867,12 +1865,8 @@ bot.callbackQuery(/^img_evt_skip_(\d+)_(\d+)$/, async (ctx) => {
       (t) =>
         t.time &&
         task.time &&
-        Math.abs(
-          parseInt(t.time.split(":")[0]) * 60 +
-            parseInt(t.time.split(":")[1]) -
-            (parseInt(task.time.split(":")[0]) * 60 +
-              parseInt(task.time.split(":")[1])),
-        ) < (task.duration_minutes || 30),
+        Math.abs(timeToMinutes(t.time) - timeToMinutes(task.time)) <
+          (task.duration_minutes || 30),
     )
     .map((t) => `${t.task} (${t.time})`);
 
@@ -2082,7 +2076,7 @@ bot.on("message:text", async (ctx) => {
 
     // Custom time input: HH:MM
     if (flow.customField === "time") {
-      const match = text.match(/^(\d{1,2}):(\d{2})$/);
+      const match = text.match(/^(\d{1,2})[.:](\d{2})$/);
       if (match && state) {
         state.selectedTime = `${match[1].padStart(2, "0")}:${match[2]}`;
 
@@ -2175,8 +2169,8 @@ bot.on("message:text", async (ctx) => {
   if (flow && flow.type === "awaiting_custom_reminder") {
     const text = ctx.message.text.trim();
     // Match either "DD.MM HH:MM" or "HH:MM"
-    const matchFull = text.match(/^(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})$/);
-    const matchTime = text.match(/^(\d{1,2}):(\d{2})$/);
+    const matchFull = text.match(/^(\d{1,2})\.(\d{1,2})\s+(\d{1,2})[.:](\d{2})$/);
+    const matchTime = text.match(/^(\d{1,2})[.:](\d{2})$/);
     const pending = getPending(flow.pendingId);
 
     if ((matchFull || matchTime) && pending) {

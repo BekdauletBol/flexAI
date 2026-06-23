@@ -1,6 +1,6 @@
 import { AnalysisResult, TodoItem, TimeFrame, TaskSource } from '../types/analysis.js';
 import { db, DB_PATH, detectTimeConflicts, getTasksForDate, getTaskTimeRange, insertReminder } from './db.js';
-import { kzLocalToUTC, utcToKzLocalDate, getKzToday, getKzTomorrow } from '../utils/timezone.js';
+import { kzLocalToUTC, utcToKzLocalDate, getKzToday, getKzTomorrow, normalizeTime } from '../utils/timezone.js';
 import { DateTime } from 'luxon';
 import { v4 as uuid } from 'uuid';
 import { logger } from '../logger.js';
@@ -98,7 +98,7 @@ const WORKDAY_END = 22 * 60;    // 22:00
 const MIN_GAP_MINUTES = 20;
 
 function timeToMinutes(time: string): number {
-  const [h, m] = time.split(':').map(Number);
+  const [h, m] = normalizeTime(time).split(':').map(Number);
   return h * 60 + m;
 }
 
